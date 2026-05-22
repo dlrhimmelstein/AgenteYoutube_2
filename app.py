@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 
 import os
-
+import pandas as pd
 import streamlit as st
 from google.cloud import bigquery
-
+import matplotlib.pyplot as plt
 
 # =========================
 # 1. CONFIGURACION DE PAGINA
@@ -99,7 +99,75 @@ def format_compact_number(value):
         return f"{value / 1_000:.1f}K"
     return f"{int(value):,}"
 
+# =========================
+# FUNCIONES DE GRÁFICAS
+# =========================
 
+#import pandas as pd
+
+@st.cache_data(ttl=600)
+def plot_subscriber_growth():
+    """Gráfica de líneas: evolución de suscriptores si hay datos históricos"""
+    try:
+        query = f"""
+        SELECT fecha_publicacion, suscriptores_canal
+        FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
+        WHERE channel_title = 'Las Damitas Histeria' AND suscriptores_canal IS NOT NULL
+        ORDER BY fecha_publicacion ASC
+        """
+        result = retriever.client.query(query).result()
+        df = pd.DataFrame([dict(row) for row in result])
+        if df.empty:
+            return None
+        df['fecha_publicacion'] = pd.to_datetime(df['fecha_publicacion'])
+        df = df.sort_values('fecha_publicacion')
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df['fecha_publicacion'], df['suscriptores_canal'], color='#e63946', linewidth=2)
+        ax.fill_between(df['fecha_publicacion'], df['suscriptores_canal'], alpha=0.2, color='#e63946')
+        ax.set_title("📈 Evolución de suscriptores", fontsize=12, fontweight='bold', color='white')
+        ax.set_xlabel("Fecha", color='#a0a0a0')
+        ax.set_ylabel("Suscriptores", color='#a0a0a0')
+        ax.tick_params(colors='#a0a0a0')
+        ax.set_facecolor('#1e1e1e')
+        fig.patch.set_facecolor('#1e1e1e')
+        return fig
+    except Exception as e:
+        st.warning(f"No se pudo generar gráfica de suscriptores: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_views_by_topic():
+    """Gráfica de barras horizontales: vistas totales por tema"""
+    topics = retriever.topic_performance(limit=8, order_by="views")
+    if not topics:
+        return None
+    df = pd.DataFrame(topics)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.barh(df['tema_legible'], df['views_totales'], color='#e63946')
+    ax.set_title("📊 Vistas totales por tema", fontsize=12, fontweight='bold', color='white')
+    ax.set_xlabel("Vistas", color='#a0a0a0')
+    ax.set_ylabel("Tema", color='#a0a0a0')
+    ax.tick_params(colors='#a0a0a0')
+    ax.set_facecolor('#1e1e1e')
+    fig.patch.set_facecolor('#1e1e1e')
+    return fig
+
+@st.cache_data(ttl=600)
+def plot_engagement_by_topic():
+    """Gráfica de barras horizontales: engagement promedio por tema"""
+    topics = retriever.topic_performance(limit=8, order_by="engagement")
+    if not topics:
+        return None
+    df = pd.DataFrame(topics)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.barh(df['tema_legible'], df['engagement_promedio'], color='#e63946')
+    ax.set_title("🔥 Engagement por tema", fontsize=12, fontweight='bold', color='white')
+    ax.set_xlabel("Engagement (%)", color='#a0a0a0')
+    ax.set_ylabel("Tema", color='#a0a0a0')
+    ax.tick_params(colors='#a0a0a0')
+    ax.set_facecolor('#1e1e1e')
+    fig.patch.set_facecolor('#1e1e1e')
+    return fig
 @st.cache_data(show_spinner=False, ttl=900)
 def load_sidebar_stats():
     try:
@@ -123,7 +191,76 @@ def load_sidebar_stats():
 
 metrics, segment_stats = load_sidebar_stats()
 
+def generar_grafica_barras_topics(metric='views', title="Vistas por tema"):
+    topics = retriever.topic_performance(limit=8, order_by=metric)
+    if not topics:
+        return None
+    #import pandas as pd
+    df = pd.DataFrame(topics)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.barh(df['tema_legible'], df[f'{metric}_totales'], color='#e63946')
+    ax.set_title(title, fontsize=12, fontweight='bold', color='white')
+    ax.set_xlabel(metric.capitalize(), color='#a0a0a0')
+    ax.set_ylabel("Tema", color='#a0a0a0')
+    ax.tick_params(colors='#a0a0a0')
+    ax.set_facecolor('#1e1e1e')
+    fig.patch.set_facecolor('#1e1e1e')
+    return fig
+@st.cache_data(ttl=600)
 
+def plot_views_by_weekday():
+    """Gráfica de barras: vistas promedio por día de la semana"""
+    query = f"""
+    SELECT dia_semana_publicacion, AVG(views) as avg_views
+    FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
+    WHERE channel_title = 'Las Damitas Histeria' AND dia_semana_publicacion IS NOT NULL
+    GROUP BY dia_semana_publicacion
+    ORDER BY avg_views DESC
+    """
+    result = retriever.client.query(query).result()
+    df = pd.DataFrame([dict(row) for row in result])
+    if df.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.bar(df['dia_semana_publicacion'], df['avg_views'], color='#e63946')
+    ax.set_title("📅 Vistas promedio por día de publicación", fontsize=12, fontweight='bold', color='white')
+    ax.set_xlabel("Día", color='#a0a0a0')
+    ax.set_ylabel("Vistas promedio", color='#a0a0a0')
+    ax.tick_params(colors='#a0a0a0')
+    ax.set_facecolor('#1e1e1e')
+    fig.patch.set_facecolor('#1e1e1e')
+    return fig
+def generar_grafica_lineas_suscriptores():
+    # Reutilizar subs_df del dashboard (si existe)
+    try:
+        subs_query = f"""
+        SELECT fecha_publicacion, suscriptores_canal
+        FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
+        WHERE channel_title = 'Las Damitas Histeria' AND suscriptores_canal IS NOT NULL
+        ORDER BY fecha_publicacion ASC
+        """
+        subs_result = retriever.client.query(subs_query).result()
+        subs_df = [dict(row) for row in subs_result]
+        if not subs_df:
+            return None
+        #import pandas as pd
+        #import matplotlib.pyplot as plt
+        df = pd.DataFrame(subs_df)
+        df['fecha_publicacion'] = pd.to_datetime(df['fecha_publicacion'])
+        df = df.sort_values('fecha_publicacion')
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df['fecha_publicacion'], df['suscriptores_canal'], color='#e63946', linewidth=2)
+        ax.fill_between(df['fecha_publicacion'], df['suscriptores_canal'], alpha=0.2, color='#e63946')
+        ax.set_title("Crecimiento de suscriptores", fontsize=12, fontweight='bold', color='white')
+        ax.set_xlabel("Fecha", color='#a0a0a0')
+        ax.set_ylabel("Suscriptores", color='#a0a0a0')
+        ax.tick_params(colors='#a0a0a0')
+        ax.set_facecolor('#1e1e1e')
+        fig.patch.set_facecolor('#1e1e1e')
+        return fig
+    except Exception as e:
+        st.warning(f"No se pudo generar gráfica de suscriptores: {e}")
+        return None
 # =========================
 # 5. ESTILOS GENERALES DE LA APP
 # =========================
@@ -341,6 +478,69 @@ st.markdown(
     word-wrap: break-word;
     white-space: normal;
     }
+    .stButton button {
+    background-color: #e63946 !important;
+    color: white !important;
+    border: none !important;
+    }
+    .stButton button:hover {
+        background-color: #c1121f !important;
+    }
+
+    /* Estilo para el label del selectbox */
+    div[data-testid="stSelectbox"] label {
+        color: #ffffff !important;
+        font-size: 0.9rem !important;
+        font-weight: 600 !important;
+        font-family: 'Inter', sans-serif !important;
+    }
+
+    /* Estilo para el selectbox en sí (el recuadro) */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+        background-color: #2c2c2c !important;
+        border-color: #e63946 !important;
+        border-radius: 8px !important;
+    }
+
+    /* Estilo para el texto dentro del selectbox */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] div {
+        color: #ffffff !important;
+        font-size: 0.85rem !important;
+    }
+
+    /* Estilo para el ícono de dropdown */
+    div[data-testid="stSelectbox"] svg {
+        fill: #e63946 !important;
+    }
+
+    /* Hacer visible el texto del selectbox cuando está cerrado */
+    .stSelectbox [data-baseweb="select"] div:first-child {
+        color: #ffffff !important;
+    }
+
+    /* Estilo para el menú desplegable (las opciones) */
+    div[data-testid="stSelectbox"] ul {
+        background-color: #1e1e1e !important;
+        border: 1px solid #e63946 !important;
+    }
+
+    /* Estilo para cada opción individual */
+    div[data-testid="stSelectbox"] ul li {
+        color: #ffffff !important;
+        background-color: #1e1e1e !important;
+        font-size: 0.8rem !important;
+    }
+
+    /* Estilo cuando pasas el mouse sobre una opción */
+    div[data-testid="stSelectbox"] ul li:hover {
+        background-color: #e63946 !important;
+        color: #ffffff !important;
+    }
+
+    /* Estilo para el ícono de flecha */
+    div[data-testid="stSelectbox"] svg {
+    fill: #e63946 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -433,8 +633,8 @@ with col_izq:
 
     # --- Gráfico de suscriptores (opcional) ---
     if subs_df:
-        import pandas as pd
-        import matplotlib.pyplot as plt
+        #import pandas as pd
+        #import matplotlib.pyplot as plt
         df_subs = pd.DataFrame(subs_df)
         if not df_subs.empty and 'fecha_publicacion' in df_subs.columns and 'suscriptores_canal' in df_subs.columns:
             df_subs['fecha_publicacion'] = pd.to_datetime(df_subs['fecha_publicacion'])
@@ -511,7 +711,42 @@ with col_izq:
                     <div style="color: #10b981; font-size: 0.8rem;">▲ {topic.get('videos', 0)} videos</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+    # --- SECCIÓN DE GRÁFICAS INTERACTIVAS ---
+    st.markdown("## 📊 Análisis Visual Avanzado")
     
+    # Selector de tipo de gráfica
+    tipo_grafica = st.selectbox(
+    "Selecciona la métrica a visualizar:",
+    ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día"),
+    key="selector_graficas"
+    )
+    
+    # Botón para actualizar (opcional, pero selectbox ya actualiza al cambiar)
+    if tipo_grafica == "Vistas por tema":
+        fig = plot_views_by_topic()
+        if fig:
+            st.pyplot(fig)
+        else:
+            st.info("No hay datos suficientes para mostrar vistas por tema.")
+    elif tipo_grafica == "Engagement por tema":
+        fig = plot_engagement_by_topic()
+        if fig:
+            st.pyplot(fig)
+        else:
+            st.info("No hay datos suficientes para mostrar engagement por tema.")
+    elif tipo_grafica == "Evolución de suscriptores":
+        fig = plot_subscriber_growth()
+        if fig:
+            st.pyplot(fig)
+        else:
+            st.info("No hay datos históricos de suscriptores para mostrar evolución.")
+    elif tipo_grafica == "Vistas promedio por día":
+        fig = plot_views_by_weekday()
+        if fig:
+            st.pyplot(fig)
+        else:
+            st.info("No hay datos suficientes para mostrar vistas por día.")
 #Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
 with col_der:
     
@@ -545,7 +780,10 @@ with col_der:
             """,
             unsafe_allow_html=True,
         )
-
+    # Botón para limpiar conversación
+    if st.button("🗑️ Limpiar conversación", key="clear_chat", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
 
     # =========================
     # 10. HISTORIAL
@@ -585,6 +823,48 @@ with col_der:
                 answer = agent.answer(prompt, history=history_for_agent)
                 thinking_placeholder.empty()
                 st.markdown(answer)
+        
+                # Detectar intención de gráfica
+                prompt_lower = prompt.lower()
+                mostrar_botones = False
+                tipo_grafica = None
+                
+                if any(p in prompt_lower for p in ["tema", "tópico", "categoría"]):
+                    if any(p in prompt_lower for p in ["vista", "views", "visualizac"]):
+                        mostrar_botones = True
+                        tipo_grafica = "topics_views"
+                    elif any(p in prompt_lower for p in ["engagement", "interacción"]):
+                        mostrar_botones = True
+                        tipo_grafica = "topics_engagement"
+                elif any(p in prompt_lower for p in ["evolución", "crecimiento", "suscriptor", "tiempo"]):
+                    mostrar_botones = True
+                    tipo_grafica = "suscriptores_line"
+                
+                if mostrar_botones:
+                    st.markdown("### 📊 Visualización de datos")
+                    col_b1, col_b2 = st.columns(2)
+                    with col_b1:
+                        if st.button("📊 Ver gráfica de barras", key="grafica_barras", use_container_width=True):
+                            if tipo_grafica == "topics_views":
+                                fig = generar_grafica_barras_topics('views', "Vistas totales por tema")
+                                if fig:
+                                    st.pyplot(fig)
+                                else:
+                                    st.info("No hay datos suficientes para generar la gráfica.")
+                            elif tipo_grafica == "topics_engagement":
+                                fig = generar_grafica_barras_topics('engagement', "Engagement promedio por tema")
+                                if fig:
+                                    st.pyplot(fig)
+                                else:
+                                    st.info("No hay datos suficientes para generar la gráfica.")
+                    with col_b2:
+                        if st.button("📈 Ver gráfica de líneas", key="grafica_lineas", use_container_width=True):
+                            if tipo_grafica == "suscriptores_line":
+                                fig = generar_grafica_lineas_suscriptores()
+                                if fig:
+                                    st.pyplot(fig)
+                                else:
+                                    st.info("No hay datos históricos de suscriptores para mostrar evolución.")
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             except Exception as exc:
                 thinking_placeholder.empty()
