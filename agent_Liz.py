@@ -650,7 +650,15 @@ class BigQueryYouTubeRetriever:
 
     def _query(self, sql: str, parameters: Optional[list[bigquery.QueryParameter]] = None) -> list[dict[str, Any]]:
         job_config = bigquery.QueryJobConfig(query_parameters=parameters or [])
-        rows = self.client.query(sql, job_config=job_config).result()
+        try:
+            rows = self.client.query(sql, job_config=job_config).result()
+        except Exception as exc:
+            numbered_sql = "\n".join(
+                f"{idx:03d}: {line}" for idx, line in enumerate(sql.splitlines(), start=1)
+            )
+            raise RuntimeError(
+                f"BigQuery rechazo esta consulta: {exc}\n\nSQL generado:\n{numbered_sql}"
+            ) from exc
         return [dict(row) for row in rows]
 
     def _video_columns(self, include_transcript: bool = False) -> str:
