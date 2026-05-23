@@ -1901,4 +1901,3 @@ def get_agent() -> RAGYouTubeAgent:
 
 retriever = get_retriever()
 agent = get_agent()
-
