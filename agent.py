@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import json
 import os
 import random
@@ -1384,20 +1385,120 @@ Redacta la respuesta final en español:
 
 
 def fallback_answer_without_gemini(context: dict[str, Any], error: Exception) -> str:
-    if not context.get("resultados"):
-        return f"No encontre resultados suficientes. Detalle tecnico: {str(error)[:180]}"
+    """
+    Respuesta de respaldo cuando Gemini no está disponible.
 
-    lines = ["Gemini no estuvo disponible; te dejo los resultados directos:\n"]
-    for idx, row in enumerate(context["resultados"][:5], start=1):
-        fragment = row.get("segment_text") or ""
-        if len(fragment) > 300:
-            fragment = fragment[:300] + "..."
-        lines.append(
-            f"{idx}. {row.get('titulo_video', 'Sin titulo')}\n"
-            f"   Minuto aprox.: {row.get('estimated_start_mmss', 'N/A')} - {row.get('estimated_end_mmss', '')}\n"
-            f"   URL: {row.get('url_video', 'Sin URL')}\n"
-            f"   Fragmento: {fragment}\n"
+    Objetivo:
+    - No romper la experiencia del usuario.
+    - Evitar mostrar errores técnicos largos.
+    - Usar los resultados recuperados por RAG aunque el modelo generativo falle.
+    - Mantener un tono humano, útil y enfocado en crecimiento.
+    """
+
+    error_text = str(error).lower()
+
+    if any(token in error_text for token in ["429", "quota", "resource_exhausted", "rate"]):
+        friendly_error = (
+            "Gemini se quedó sin cuota o está limitado temporalmente. "
+            "Aun así, pude recuperar datos del canal y te dejo lo más útil:"
         )
+    elif any(token in error_text for token in ["503", "unavailable", "temporar"]):
+        friendly_error = (
+            "Gemini está saturado o temporalmente no disponible. "
+            "Mientras vuelve, te dejo los resultados recuperados directamente:"
+        )
+    else:
+        friendly_error = (
+            "Gemini no pudo generar la respuesta completa en este momento. "
+            "Pero sí pude revisar el contexto recuperado:"
+        )
+
+    resultados = context.get("resultados") or context.get("resultados_bigquery") or context.get("resultados_semanticos") or []
+
+    if not resultados:
+        tema = context.get("tema_detectado") or context.get("tema_consultado") or context.get("tema") or context.get("pregunta")
+
+        return (
+            "No encontré resultados suficientemente claros para responder con seguridad.\n\n"
+            f"**Tema detectado:** {tema or 'No identificado'}\n\n"
+            "Te recomendaría intentar con una pregunta más específica, por ejemplo:\n"
+            "- ¿En qué videos hablaron de [tema]?\n"
+            "- Dame videos relacionados con [tema]\n"
+            "- Top videos por views\n"
+            "- ¿Qué temas tuvieron mejor engagement?\n\n"
+            "Así puedo buscar mejor en transcripciones, métricas y ranking de videos."
+        )
+
+    lines = []
+    lines.append(f"{friendly_error}\n")
+
+    criterio = context.get("criterio_orden") or context.get("criterio") or context.get("nota")
+    if criterio:
+        lines.append(f"**Criterio usado:** {criterio}\n")
+
+    tema = context.get("tema_consultado") or context.get("tema_detectado") or context.get("tema")
+    if tema:
+        lines.append(f"**Tema:** {tema}\n")
+
+    lines.append("### Resultados principales\n")
+
+    for idx, row in enumerate(resultados[:5], start=1):
+        titulo = row.get("titulo_video") or row.get("tema_legible") or "Sin título"
+        url = row.get("url_video")
+        views = row.get("views")
+        likes = row.get("likes")
+        comentarios = row.get("comentarios")
+        engagement = row.get("engagement")
+
+        start = row.get("estimated_start_mmss")
+        end = row.get("estimated_end_mmss")
+
+        fragment = row.get("segment_text") or row.get("descripcion_segmento") or row.get("descripcion_video") or ""
+        fragment = str(fragment).strip()
+
+        if len(fragment) > 260:
+            fragment = fragment[:260].rstrip() + "..."
+
+        lines.append(f"**{idx}. {titulo}**")
+
+        if start or end:
+            lines.append(f"- Minuto aproximado: {start or 'N/A'} - {end or 'N/A'}")
+
+        metricas = []
+        if views is not None:
+            metricas.append(f"views: {views}")
+        if likes is not None:
+            metricas.append(f"likes: {likes}")
+        if comentarios is not None:
+            metricas.append(f"comentarios: {comentarios}")
+        if engagement is not None:
+            metricas.append(f"engagement: {engagement}")
+
+        if metricas:
+            lines.append("- Métricas: " + " · ".join(metricas))
+
+        if fragment:
+            lines.append(f"- Fragmento/contexto: {fragment}")
+
+        if url:
+            lines.append(f"- URL: {url}")
+
+        # Lectura estratégica simple sin inventar demasiado
+        if views is not None or engagement is not None:
+            lines.append(
+                "- Lectura rápida: este resultado vale la pena revisarlo primero "
+                "porque combina relación con el tema y señales de rendimiento del canal."
+            )
+
+        lines.append("")
+
+    lines.append(
+        "### Recomendación rápida\n"
+        "Empieza revisando los primeros resultados, porque son los que el agente pudo priorizar "
+        "por relación con la pregunta, views y engagement. Cuando Gemini vuelva a estar disponible, "
+        "la respuesta podrá salir más redactada y con análisis más fino."
+    )
+
     return "\n".join(lines)
 
 
@@ -1496,25 +1597,44 @@ class RAGYouTubeAgent:
             return generate_final_answer(question, context, history=history, response_mode="moments")
 
         if intent == "related_videos":
-            semantic = add_rank_and_reason(
-                self._semantic_topic_moments(topic, filters=filters, limit=max(limit, 10)),
-                order_by=order_by,
-            )[:limit]
-            lexical = add_rank_and_reason(
-                self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=limit),
-                order_by=order_by,
+            semantic = self._semantic_topic_moments(
+                topic,
+                filters=filters,
+                limit=max(limit, 10),
             )
+        
+            lexical = self.retriever.search_videos(
+                topic,
+                filters=filters,
+                order_by=order_by,
+                limit=max(limit, 10),
+            )
+        
+            merged_results = self._merge_related_video_results(
+                semantic_results=semantic,
+                lexical_results=lexical,
+                order_by=order_by,
+                limit=limit,
+            )
+        
             context = {
                 "tipo": "videos_relacionados_hibridos",
                 "tema": topic,
                 "criterio_orden": (
-                    f"Primero se filtra por relacion semantica con '{topic}'. "
-                    f"Despues se ordena por {order_by}, usando views y engagement como desempate."
+                    f"Se combinaron coincidencias semánticas en transcripciones y búsqueda textual en BigQuery. "
+                    f"Después se priorizó por {order_by}, views y engagement para recomendar los videos con más potencial."
                 ),
-                "resultados": semantic or lexical,
+                "resultados": merged_results,
+                "resultados_semanticos": semantic,
                 "resultados_lexicos_bigquery": lexical,
             }
-            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+        
+            return generate_final_answer(
+                question,
+                context,
+                history=history,
+                response_mode="growth_rank",
+            )
 
         if intent == "topic_analysis":
             context = {
@@ -1592,17 +1712,74 @@ class RAGYouTubeAgent:
             }
             return generate_final_answer(question, context, history=history, response_mode="ml")
 
-        semantic = self._semantic_topic_moments(topic or question, filters=filters, limit=5)
+        # =========================
+        # FALLBACK HÍBRIDO INTELIGENTE
+        # =========================
+        # Si ninguna intención fue suficientemente clara, intentamos responder
+        # combinando búsqueda semántica en transcripciones + búsqueda textual en BigQuery.
+        
+        fallback_topic = topic or extract_topic_from_question(question, compact_history(history)) or question
+        
+        semantic = self._semantic_topic_moments(
+            fallback_topic,
+            filters=filters,
+            limit=8,
+        )
+        
+        lexical = self.retriever.search_videos(
+            fallback_topic,
+            filters=filters,
+            order_by=order_by,
+            limit=8,
+        )
+        
+        merged_results = self._merge_related_video_results(
+            semantic_results=semantic,
+            lexical_results=lexical,
+            order_by=order_by,
+            limit=5,
+        )
+        
+        if not merged_results:
+            context = {
+                "tipo": "fallback_sin_resultados",
+                "pregunta": question,
+                "tema_detectado": fallback_topic,
+                "nota": (
+                    "No se encontraron resultados suficientemente claros en transcripciones "
+                    "ni en la tabla principal de videos."
+                ),
+                "perfil_canal": self.retriever.channel_profile(),
+                "metricas_generales": self.retriever.analytics_summary(),
+            }
+        
+            return generate_final_answer(
+                question,
+                context,
+                history=history,
+                response_mode="normal",
+            )
+        
         context = {
-            "tipo": "fallback_hibrido",
+            "tipo": "fallback_hibrido_inteligente",
             "pregunta": question,
-            "resultados_semanticos": semantic,
-            "resultados_bigquery": add_rank_and_reason(
-                self.retriever.search_videos(topic or question, filters=filters, order_by=order_by, limit=5),
-                order_by=order_by,
+            "tema_detectado": fallback_topic,
+            "criterio_orden": (
+                "Como la intención no fue totalmente clara, se combinaron resultados de "
+                "transcripciones y BigQuery. Se priorizaron coincidencias relevantes, views, "
+                "engagement y señales de potencial para crecimiento."
             ),
+            "resultados": merged_results,
+            "resultados_semanticos": semantic,
+            "resultados_lexicos_bigquery": lexical,
         }
-        return generate_final_answer(question, context, history=history)
+        
+        return generate_final_answer(
+            question,
+            context,
+            history=history,
+            response_mode="growth_rank",
+        )
 
     def _semantic_growth_score(self, row: dict[str, Any]) -> float:
     """
@@ -1646,6 +1823,138 @@ class RAGYouTubeAgent:
         + comments_score * 0.02
     )
 
+    def _merge_related_video_results(
+        self,
+        semantic_results: list[dict[str, Any]],
+        lexical_results: list[dict[str, Any]],
+        order_by: str = "views",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """
+        Fusiona resultados semánticos y lexicales para videos relacionados.
+    
+        Objetivo:
+        - No perder resultados buenos de transcripción.
+        - No ignorar videos fuertes por views/engagement.
+        - Evitar duplicados por video_id.
+        - Priorizar crecimiento del canal.
+        """
+    
+        merged_by_video: dict[str, dict[str, Any]] = {}
+    
+        for row in semantic_results or []:
+            video_id = str(row.get("video_id") or row.get("url_video") or row.get("titulo_video"))
+            if not video_id:
+                continue
+    
+            item = dict(row)
+            item["fuente_resultado"] = "semantico_transcripcion"
+            item["match_semantico"] = True
+            item["match_lexical"] = False
+    
+            merged_by_video[video_id] = item
+    
+        for row in lexical_results or []:
+            video_id = str(row.get("video_id") or row.get("url_video") or row.get("titulo_video"))
+            if not video_id:
+                continue
+    
+            if video_id in merged_by_video:
+                existing = merged_by_video[video_id]
+                existing["match_lexical"] = True
+                existing["fuente_resultado"] = "semantico_y_lexical"
+    
+                # Completar campos que podrían venir solo de BigQuery.
+                for key, value in row.items():
+                    if existing.get(key) in {None, "", 0} and value not in {None, ""}:
+                        existing[key] = value
+            else:
+                item = dict(row)
+                item["fuente_resultado"] = "lexical_bigquery"
+                item["match_semantico"] = False
+                item["match_lexical"] = True
+                merged_by_video[video_id] = item
+    
+        merged = list(merged_by_video.values())
+    
+        ranked = sorted(
+            merged,
+            key=lambda row: self._related_video_score(row, order_by=order_by),
+            reverse=True,
+        )
+    
+        final = []
+    
+        for rank, row in enumerate(ranked[:limit], start=1):
+            item = dict(row)
+            item["rank"] = rank
+            item["criterio_prioridad"] = (
+                f"Ordenado por relación con el tema, {order_by}, views y engagement. "
+                "Se favorecen videos que aparecen tanto en búsqueda semántica como textual."
+            )
+            item["score_relacionado"] = round(
+                self._related_video_score(row, order_by=order_by),
+                4,
+            )
+    
+            metric = ALLOWED_ORDER_COLUMNS.get(order_by, "views")
+            item["metrica_principal"] = item.get(metric)
+    
+            final.append(item)
+    
+        return final
+
+        def _related_video_score(
+            self,
+            row: dict[str, Any],
+            order_by: str = "views",
+        ) -> float:
+            """
+            Score para ordenar videos relacionados.
+        
+            Balance:
+            - Coincidencia semántica y textual.
+            - Métrica solicitada por el usuario.
+            - Views como señal principal de alcance.
+            - Engagement, likes y comentarios como señales de interacción.
+            """
+        
+            metric = ALLOWED_ORDER_COLUMNS.get(order_by, "views")
+        
+            metric_value = safe_float(row.get(metric))
+            views = safe_float(row.get("views"))
+            engagement = safe_float(row.get("engagement"))
+            likes = safe_float(row.get("likes"))
+            comentarios = safe_float(row.get("comentarios"))
+        
+            score_semantico = safe_float(row.get("score_semantico"))
+            score_total = safe_float(row.get("score_total"))
+            lexical_hits = safe_float(row.get("lexical_hits"))
+        
+            semantic_bonus = 0.15 if row.get("match_semantico") else 0
+            lexical_bonus = 0.10 if row.get("match_lexical") else 0
+            hybrid_bonus = 0.15 if row.get("match_semantico") and row.get("match_lexical") else 0
+        
+            metric_score = math.log10(metric_value + 1) / 7
+            views_score = math.log10(views + 1) / 7
+            likes_score = math.log10(likes + 1) / 6
+            comments_score = math.log10(comentarios + 1) / 5
+            engagement_score = min(engagement, 100) / 100
+            lexical_score = min(lexical_hits, 4) / 4
+        
+            return (
+                semantic_bonus
+                + lexical_bonus
+                + hybrid_bonus
+                + score_semantico * 0.25
+                + score_total * 0.15
+                + lexical_score * 0.10
+                + metric_score * 0.12
+                + views_score * 0.12
+                + engagement_score * 0.06
+                + likes_score * 0.03
+                + comments_score * 0.02
+            )
 
 # =========================
 # 8. INICIALIZACION
