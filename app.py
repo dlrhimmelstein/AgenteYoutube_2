@@ -3,8 +3,10 @@
 import os
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 from google.cloud import bigquery
-import matplotlib.pyplot as plt
+
 
 # =========================
 # 1. CONFIGURACION DE PAGINA
@@ -103,71 +105,128 @@ def format_compact_number(value):
 # FUNCIONES DE GRÁFICAS
 # =========================
 
-#import pandas as pd
 
+#Grafica de evolución de suscriptores, con validaciones para evitar errores por datos faltantes o nulos.
 @st.cache_data(ttl=600)
 def plot_subscriber_growth():
-    """Gráfica de líneas: evolución de suscriptores si hay datos históricos"""
+    """Gráfica de líneas: evolución de suscriptores"""
     try:
+        # 1. Verificar la existencia de la columna 'suscriptores_canal'
+        check_column_query = f"""
+        SELECT column_name
+        FROM `{PROJECT_ID}.{DATASET_ID}.INFORMATION_SCHEMA.COLUMNS`
+        WHERE table_name = 'fact_metricas_variables'
+          AND column_name = 'suscriptores_canal'
+        """
+        col_result = retriever.client.query(check_column_query).result()
+        if not any(col_result):
+            st.warning("La columna 'suscriptores_canal' no existe en la tabla.")
+            return None
+
+        # 2. Consulta los datos de suscriptores
         query = f"""
         SELECT fecha_publicacion, suscriptores_canal
         FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
-        WHERE channel_title = 'Las Damitas Histeria' AND suscriptores_canal IS NOT NULL
+        WHERE suscriptores_canal IS NOT NULL
+          AND fecha_publicacion IS NOT NULL
         ORDER BY fecha_publicacion ASC
         """
         result = retriever.client.query(query).result()
-        df = pd.DataFrame([dict(row) for row in result])
-        if df.empty:
+        rows = [dict(row) for row in result]
+
+        if not rows:
+            st.info("No hay datos históricos de suscriptores para mostrar evolución.")
             return None
+
+        # 3. Crear DataFrame y validar
+        df = pd.DataFrame(rows)
         df['fecha_publicacion'] = pd.to_datetime(df['fecha_publicacion'])
         df = df.sort_values('fecha_publicacion')
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(df['fecha_publicacion'], df['suscriptores_canal'], color='#e63946', linewidth=2)
-        ax.fill_between(df['fecha_publicacion'], df['suscriptores_canal'], alpha=0.2, color='#e63946')
-        ax.set_title("📈 Evolución de suscriptores", fontsize=12, fontweight='bold', color='white')
-        ax.set_xlabel("Fecha", color='#a0a0a0')
-        ax.set_ylabel("Suscriptores", color='#a0a0a0')
-        ax.tick_params(colors='#a0a0a0')
-        ax.set_facecolor('#1e1e1e')
-        fig.patch.set_facecolor('#1e1e1e')
+
+        if df.empty:
+            st.info("No hay datos suficientes para generar la gráfica de suscriptores.")
+            return None
+
+        # 4. Crear la gráfica de líneas con Plotly
+        import plotly.express as px
+        fig = px.line(
+            df, x='fecha_publicacion', y='suscriptores_canal',
+            title='Evolución de suscriptores',
+            labels={'fecha_publicacion': 'Fecha', 'suscriptores_canal': 'Suscriptores'}
+        )
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='#ffffff',
+            title_font_color='#ffffff'
+        )
         return fig
+
     except Exception as e:
-        st.warning(f"No se pudo generar gráfica de suscriptores: {e}")
+        st.error(f"Error al generar la gráfica de suscriptores: {e}")
         return None
 
 @st.cache_data(ttl=600)
 def plot_views_by_topic():
-    """Gráfica de barras horizontales: vistas totales por tema"""
-    topics = retriever.topic_performance(limit=8, order_by="views")
-    if not topics:
+    """Gráfica de barras horizontales: vistas totales por tema (Plotly)"""
+    try:
+        topics = retriever.topic_performance(limit=8, order_by="views")
+        if not topics:
+            return None
+        df = pd.DataFrame(topics)
+        import plotly.express as px
+        fig = px.bar(
+            df,
+            x='views_totales',
+            y='tema_legible',
+            orientation='h',
+            title="📊 Vistas totales por tema",
+            labels={'views_totales': 'Vistas', 'tema_legible': 'Tema'},
+            color='views_totales',
+            color_continuous_scale='Reds'
+        )
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='white',
+            title_font_color='white'
+        )
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de vistas por tema: {e}")
         return None
-    df = pd.DataFrame(topics)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(df['tema_legible'], df['views_totales'], color='#e63946')
-    ax.set_title("📊 Vistas totales por tema", fontsize=12, fontweight='bold', color='white')
-    ax.set_xlabel("Vistas", color='#a0a0a0')
-    ax.set_ylabel("Tema", color='#a0a0a0')
-    ax.tick_params(colors='#a0a0a0')
-    ax.set_facecolor('#1e1e1e')
-    fig.patch.set_facecolor('#1e1e1e')
-    return fig
 
 @st.cache_data(ttl=600)
 def plot_engagement_by_topic():
-    """Gráfica de barras horizontales: engagement promedio por tema"""
-    topics = retriever.topic_performance(limit=8, order_by="engagement")
-    if not topics:
+    """Gráfica de barras horizontales: engagement promedio por tema (Plotly)"""
+    try:
+        topics = retriever.topic_performance(limit=8, order_by="engagement")
+        if not topics:
+            return None
+        df = pd.DataFrame(topics)
+        import plotly.express as px
+        fig = px.bar(
+            df,
+            x='engagement_promedio',
+            y='tema_legible',
+            orientation='h',
+            title="🔥 Engagement por tema",
+            labels={'engagement_promedio': 'Engagement (%)', 'tema_legible': 'Tema'},
+            color='engagement_promedio',
+            color_continuous_scale='Reds'
+        )
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='white',
+            title_font_color='white'
+        )
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de engagement por tema: {e}")
         return None
-    df = pd.DataFrame(topics)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(df['tema_legible'], df['engagement_promedio'], color='#e63946')
-    ax.set_title("🔥 Engagement por tema", fontsize=12, fontweight='bold', color='white')
-    ax.set_xlabel("Engagement (%)", color='#a0a0a0')
-    ax.set_ylabel("Tema", color='#a0a0a0')
-    ax.tick_params(colors='#a0a0a0')
-    ax.set_facecolor('#1e1e1e')
-    fig.patch.set_facecolor('#1e1e1e')
-    return fig
+
+
 @st.cache_data(show_spinner=False, ttl=900)
 def load_sidebar_stats():
     try:
@@ -191,76 +250,45 @@ def load_sidebar_stats():
 
 metrics, segment_stats = load_sidebar_stats()
 
-def generar_grafica_barras_topics(metric='views', title="Vistas por tema"):
-    topics = retriever.topic_performance(limit=8, order_by=metric)
-    if not topics:
-        return None
-    #import pandas as pd
-    df = pd.DataFrame(topics)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.barh(df['tema_legible'], df[f'{metric}_totales'], color='#e63946')
-    ax.set_title(title, fontsize=12, fontweight='bold', color='white')
-    ax.set_xlabel(metric.capitalize(), color='#a0a0a0')
-    ax.set_ylabel("Tema", color='#a0a0a0')
-    ax.tick_params(colors='#a0a0a0')
-    ax.set_facecolor('#1e1e1e')
-    fig.patch.set_facecolor('#1e1e1e')
-    return fig
-@st.cache_data(ttl=600)
 
+
+@st.cache_data(ttl=600)
 def plot_views_by_weekday():
-    """Gráfica de barras: vistas promedio por día de la semana"""
-    query = f"""
-    SELECT dia_semana_publicacion, AVG(views) as avg_views
-    FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
-    WHERE channel_title = 'Las Damitas Histeria' AND dia_semana_publicacion IS NOT NULL
-    GROUP BY dia_semana_publicacion
-    ORDER BY avg_views DESC
-    """
-    result = retriever.client.query(query).result()
-    df = pd.DataFrame([dict(row) for row in result])
-    if df.empty:
-        return None
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.bar(df['dia_semana_publicacion'], df['avg_views'], color='#e63946')
-    ax.set_title("📅 Vistas promedio por día de publicación", fontsize=12, fontweight='bold', color='white')
-    ax.set_xlabel("Día", color='#a0a0a0')
-    ax.set_ylabel("Vistas promedio", color='#a0a0a0')
-    ax.tick_params(colors='#a0a0a0')
-    ax.set_facecolor('#1e1e1e')
-    fig.patch.set_facecolor('#1e1e1e')
-    return fig
-def generar_grafica_lineas_suscriptores():
-    # Reutilizar subs_df del dashboard (si existe)
+    """Gráfica de barras: vistas promedio por día de la semana (Plotly)"""
     try:
-        subs_query = f"""
-        SELECT fecha_publicacion, suscriptores_canal
+        query = f"""
+        SELECT dia_semana_publicacion, AVG(views) as avg_views
         FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
-        WHERE channel_title = 'Las Damitas Histeria' AND suscriptores_canal IS NOT NULL
-        ORDER BY fecha_publicacion ASC
+        WHERE channel_title = 'Las Damitas Histeria' AND dia_semana_publicacion IS NOT NULL
+        GROUP BY dia_semana_publicacion
+        ORDER BY avg_views DESC
         """
-        subs_result = retriever.client.query(subs_query).result()
-        subs_df = [dict(row) for row in subs_result]
-        if not subs_df:
+        result = retriever.client.query(query).result()
+        df = pd.DataFrame([dict(row) for row in result])
+        if df.empty:
             return None
-        #import pandas as pd
-        #import matplotlib.pyplot as plt
-        df = pd.DataFrame(subs_df)
-        df['fecha_publicacion'] = pd.to_datetime(df['fecha_publicacion'])
-        df = df.sort_values('fecha_publicacion')
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(df['fecha_publicacion'], df['suscriptores_canal'], color='#e63946', linewidth=2)
-        ax.fill_between(df['fecha_publicacion'], df['suscriptores_canal'], alpha=0.2, color='#e63946')
-        ax.set_title("Crecimiento de suscriptores", fontsize=12, fontweight='bold', color='white')
-        ax.set_xlabel("Fecha", color='#a0a0a0')
-        ax.set_ylabel("Suscriptores", color='#a0a0a0')
-        ax.tick_params(colors='#a0a0a0')
-        ax.set_facecolor('#1e1e1e')
-        fig.patch.set_facecolor('#1e1e1e')
+        import plotly.express as px
+        fig = px.bar(
+            df,
+            x='dia_semana_publicacion',
+            y='avg_views',
+            title="📅 Vistas promedio por día de publicación",
+            labels={'dia_semana_publicacion': 'Día', 'avg_views': 'Vistas promedio'},
+            color='avg_views',
+            color_continuous_scale='Reds'
+        )
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='white',
+            title_font_color='white'
+        )
         return fig
     except Exception as e:
-        st.warning(f"No se pudo generar gráfica de suscriptores: {e}")
+        st.error(f"Error en gráfica de vistas por día: {e}")
         return None
+
+
 # =========================
 # 5. ESTILOS GENERALES DE LA APP
 # =========================
@@ -497,26 +525,17 @@ st.markdown(
 
     /* Estilo para el selectbox en sí (el recuadro) */
     div[data-testid="stSelectbox"] div[data-baseweb="select"] {
-        background-color: #2c2c2c !important;
+        background-color: #f0f0f0 !important;
         border-color: #e63946 !important;
         border-radius: 8px !important;
     }
 
-    /* Estilo para el texto dentro del selectbox */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] div {
-        color: #ffffff !important;
-        font-size: 0.85rem !important;
-    }
 
     /* Estilo para el ícono de dropdown */
     div[data-testid="stSelectbox"] svg {
         fill: #e63946 !important;
     }
 
-    /* Hacer visible el texto del selectbox cuando está cerrado */
-    .stSelectbox [data-baseweb="select"] div:first-child {
-        color: #ffffff !important;
-    }
 
     /* Estilo para el menú desplegable (las opciones) */
     div[data-testid="stSelectbox"] ul {
@@ -540,6 +559,19 @@ st.markdown(
     /* Estilo para el ícono de flecha */
     div[data-testid="stSelectbox"] svg {
     fill: #e63946 !important;
+    }
+
+    /* Estilo para el texto dentro del selectbox */
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] div {
+        color: #000000 !important;        /* Cambiado a negro */
+        font-size: 0.85rem !important;
+        font-weight: bold !important;     /* Añadido negritas */
+    }
+
+    /* Hacer visible el texto del selectbox cuando está cerrado */
+    .stSelectbox [data-baseweb="select"] div:first-child {
+        color: #000000 !important;        /* Cambiado a negro */
+        font-weight: bold !important;     /* Añadido negritas */
     }
     </style>
     """,
@@ -631,26 +663,7 @@ with col_izq:
     else:
         st.warning("No hay videos para mostrar. Verifica la conexión con BigQuery.")
 
-    # --- Gráfico de suscriptores (opcional) ---
-    if subs_df:
-        #import pandas as pd
-        #import matplotlib.pyplot as plt
-        df_subs = pd.DataFrame(subs_df)
-        if not df_subs.empty and 'fecha_publicacion' in df_subs.columns and 'suscriptores_canal' in df_subs.columns:
-            df_subs['fecha_publicacion'] = pd.to_datetime(df_subs['fecha_publicacion'])
-            df_subs = df_subs.sort_values('fecha_publicacion')
-            fig, ax = plt.subplots(figsize=(10, 3))
-            ax.plot(df_subs['fecha_publicacion'], df_subs['suscriptores_canal'], color='#ff0000', linewidth=2)
-            ax.fill_between(df_subs['fecha_publicacion'], df_subs['suscriptores_canal'], alpha=0.1, color='#ff0000')
-            ax.set_title("Crecimiento de suscriptores en el tiempo", fontsize=12, fontweight='bold')
-            ax.set_xlabel("Fecha")
-            ax.set_ylabel("Suscriptores")
-            ax.grid(True, linestyle='--', alpha=0.5)
-            st.pyplot(fig)
-        else:
-            st.info("No hay datos suficientes para el gráfico de suscriptores.")
-    else:
-        st.info("No se encontraron datos de evolución de suscriptores.")
+    
 
     # --- Top videos de crecimiento ---
     if top_videos:
@@ -713,38 +726,37 @@ with col_izq:
                 """, unsafe_allow_html=True)
 
     # --- SECCIÓN DE GRÁFICAS INTERACTIVAS ---
+  
     st.markdown("## 📊 Análisis Visual Avanzado")
-    
-    # Selector de tipo de gráfica
+
     tipo_grafica = st.selectbox(
-    "Selecciona la métrica a visualizar:",
-    ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día"),
-    key="selector_graficas"
+        "Selecciona la métrica a visualizar:",
+        ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día"),
+        key="selector_graficas"
     )
-    
-    # Botón para actualizar (opcional, pero selectbox ya actualiza al cambiar)
+
     if tipo_grafica == "Vistas por tema":
         fig = plot_views_by_topic()
         if fig:
-            st.pyplot(fig)
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos suficientes para mostrar vistas por tema.")
     elif tipo_grafica == "Engagement por tema":
         fig = plot_engagement_by_topic()
         if fig:
-            st.pyplot(fig)
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos suficientes para mostrar engagement por tema.")
     elif tipo_grafica == "Evolución de suscriptores":
         fig = plot_subscriber_growth()
         if fig:
-            st.pyplot(fig)
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos históricos de suscriptores para mostrar evolución.")
     elif tipo_grafica == "Vistas promedio por día":
         fig = plot_views_by_weekday()
         if fig:
-            st.pyplot(fig)
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos suficientes para mostrar vistas por día.")
 #Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
