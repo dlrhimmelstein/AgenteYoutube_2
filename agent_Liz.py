@@ -1886,17 +1886,21 @@ class RAGYouTubeAgent:
         filters: Optional[SearchFilters] = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        embedding_model = self.retriever.segments_embedding_model()
-        contextual_query = build_contextual_semantic_query(topic)
-        expanded_terms = expand_topic_terms(topic, max_terms=40)
-        query_embedding = embed_query_for_model(contextual_query, embedding_model)
-        results = self.retriever.semantic_search_transcript_segments(
-            query_embedding=query_embedding,
-            query_terms=expanded_terms,
-            filters=filters,
-            top_k=60,
-            min_score=max(0.12, MIN_SEMANTIC_SCORE - 0.03),
-        )
+        try:
+            embedding_model = self.retriever.segments_embedding_model()
+            contextual_query = build_contextual_semantic_query(topic)
+            expanded_terms = expand_topic_terms(topic, max_terms=40)
+            query_embedding = embed_query_for_model(contextual_query, embedding_model)
+            results = self.retriever.semantic_search_transcript_segments(
+                query_embedding=query_embedding,
+                query_terms=expanded_terms,
+                filters=filters,
+                top_k=60,
+                min_score=max(0.12, MIN_SEMANTIC_SCORE - 0.03),
+            )
+        except Exception:
+            return []
+
         ranked = sorted(
             results,
             key=lambda row: (
