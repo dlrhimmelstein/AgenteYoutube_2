@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import re
@@ -48,8 +49,8 @@ ML_MODEL_ID = f"`{PROJECT_ID}.{DATASET_ID}.video_views_model`"
 
 GEMINI_MODEL = _secret_or_env("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_CLASSIFIER_MODEL = _secret_or_env("GEMINI_CLASSIFIER_MODEL", "gemini-2.5-flash-lite")
-GEMINI_RERANK_MODEL = _secret_or_env("GEMINI_RERANK_MODEL", "gemini-3.5-flash")
-GEMINI_FINAL_MODEL = _secret_or_env("GEMINI_FINAL_MODEL", "gemini-3.5-flash")
+GEMINI_RERANK_MODEL = _secret_or_env("GEMINI_RERANK_MODEL", GEMINI_MODEL)
+GEMINI_FINAL_MODEL = _secret_or_env("GEMINI_FINAL_MODEL", GEMINI_MODEL)
 GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
 GEMINI_EMBEDDING_MODEL = _secret_or_env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 LOCAL_EMBEDDING_MODEL = _secret_or_env("LOCAL_EMBEDDING_MODEL", "")
@@ -175,6 +176,35 @@ MEXICAN_LEXICON: dict[str, list[str]] = {
         "relacion", "pareja", "noviazgo", "matrimonio", "romance",
         "ligue", "quedante", "crush", "toxico", "toxica", "celos",
         "infiel", "infidelidad", "engano", "rompimiento", "terminar",
+        "ex", "exes", "ex pareja", "red flag", "red flags", "intenso",
+        "intensa", "controlador", "controladora", "manipulador",
+        "manipuladora", "narcisista", "casi algo", "situationship",
+    ],
+    "relacion toxica": [
+        "relacion toxica", "relacion conflictiva", "toxico", "toxica",
+        "red flag", "red flags", "celos", "celoso", "celosa",
+        "controlador", "controladora", "manipulador", "manipuladora",
+        "gaslighting", "chantaje", "dependencia", "intenso", "intensa",
+        "ex toxico", "ex toxica", "vato toxico", "morra toxica",
+        "enojo de pareja", "drama de pareja",
+    ],
+    "ghosting": [
+        "ghosting", "ghostear", "ghostear", "ghosteado", "ghosteada",
+        "dejar de contestar", "dejo de contestar", "no contesta",
+        "no responder", "desaparecer", "desaparecio", "se desaparecio",
+        "aparecio como si nada", "clavado", "clavada", "ligue",
+        "quedante", "casi algo", "red flag",
+    ],
+    "eneje": [
+        "eneje", "enejes", "energia eneje", "comportamiento raro",
+        "actitud cuestionable", "red flag", "red flags", "algo raro",
+        "mala vibra", "intenso", "intensa", "toxiquez", "drama",
+    ],
+    "amistad": [
+        "amistad", "amiga", "amigas", "amigo", "amigos", "bestie",
+        "mana", "hermana", "comadre", "chisme de amigas",
+        "amistad toxica", "amiga toxica", "amigo toxico",
+        "traicion", "envidia", "celos de amistad",
     ],
     "familia": [
         "familia", "mama", "papa", "madre", "padre", "hijo", "hija",
@@ -349,6 +379,8 @@ No interpretes siempre de forma literal palabras como hija, hermana, mana, mija,
 def extract_topic_from_question(question: str, conversation_hint: str = "") -> str:
     q = normalize_text(question)
     patterns = [
+        r"en que tema (?:se )?(?:hablo|hablaron|hablamos|habalro|hablaro|mencionaron|menciona|trate|trataron) (?:de|sobre)?\s*(.+)",
+        r"en que temas? (?:se )?(?:hablo|hablaron|hablamos|habalro|hablaro|mencionaron|menciona|trate|trataron) (?:de|sobre)?\s*(.+)",
         r"en que videos? (?:se )?(?:hablo|hablaron|hablamos|habalro|hablaro|mencionaron|menciona|trate|trataron) (?:de|sobre)?\s*(.+)",
         r"en que episodios? (?:se )?(?:hablo|hablaron|hablamos|habalro|hablaro|mencionaron|menciona) (?:de|sobre)?\s*(.+)",
         r"en que capitulos? (?:se )?(?:mencionaron|hablaron|hablamos|habalro|hablaro|hablo) (?:de|sobre)?\s*(.+)",
@@ -379,8 +411,11 @@ def looks_like_topic_moment_question(question: str) -> bool:
     q = normalize_text(question)
     return any(phrase in q for phrase in [
         "en que video", "en que videos", "en que episodio", "en que episodios",
-        "en que capitulo", "en que minuto", "en que momento", "donde hablaron",
-        "donde hable", "cuando mencionaron",
+        "en que capitulo", "en que minuto", "en que momento", "en que tema se hablo",
+        "en que tema hablaron", "en que temas hablaron", "en que temas se hablo",
+        "donde hablaron", "donde hable", "cuando mencionaron", "hablaron de",
+        "hablo de", "se hablo de", "se menciono", "mencionaron", "tocaron el tema",
+        "tocaron tema", "momentos de", "clips de", "fragmentos de", "parte donde",
     ])
 
 
@@ -860,8 +895,8 @@ class BigQueryYouTubeRetriever:
             previous_segment_text,
             next_segment_text,
             CONCAT(
-              IFNULL(previous_segment_text, ''), ' ',
-              IFNULL(segment_text, ''), ' ',
+              IFNULL(previous_segment_text, ''), CHR(10),
+              IFNULL(segment_text, ''), CHR(10),
               IFNULL(next_segment_text, '')
             ) AS context_window_text,
             estimated_start_seconds,
@@ -1314,6 +1349,8 @@ Campos JSON:
 
 Reglas:
 - "en que video/episodio/capitulo/minuto/momento hablaron de X" => topic_moments.
+- "en que tema se hablo de X" o "en que temas hablaron de X" => topic_moments; topic debe ser X, no la palabra "tema".
+- El canal usa espanol mexicano: interpreta jerga como wey, vato, morra, ligue, quedante, ghostear, toxico, red flag y eneje por su significado cultural.
 - "videos relacionados con X" => related_videos.
 - "temas mas hablados" => topic_analysis con order_by = videos.
 - "temas con mejor interaccion" => topic_analysis con order_by = engagement.
@@ -1332,15 +1369,41 @@ Reglas:
         plan["intent"] = "topic_moments"
         plan["topic"] = plan.get("topic") or extract_topic_from_question(question, compact_history(history))
         plan["has_transcript"] = True
+        plan["order_by"] = detect_order_by(question, default="views")
+        plan["limit"] = detect_limit(question, default=5)
     q = normalize_text(question)
-    if "videos relacionados" in q:
+    if any(phrase in q for phrase in [
+        "videos relacionados", "videos sobre", "contenido sobre",
+        "videos parecidos", "videos similares", "relacionados con",
+    ]):
         plan["intent"] = "related_videos"
         plan["topic"] = extract_topic_from_question(question, compact_history(history))
         plan["order_by"] = detect_order_by(question, default="views")
-    if "temas mas hablados" in q or "temas mas mencionados" in q:
+        plan["limit"] = detect_limit(question, default=5)
+    if q in {"gracias", "muchas gracias", "listo", "ok gracias", "va gracias"}:
+        plan["intent"] = "farewell"
+    if any(phrase in q for phrase in [
+        "resumen general", "resumen del canal", "dame un resumen",
+        "como va el canal", "panorama general", "analisis general",
+    ]):
+        plan["intent"] = "channel_summary"
+    if any(phrase in q for phrase in [
+        "que mejorarias", "como crecer", "que recomiendas mejorar",
+        "mejorar el canal", "crecer el canal", "subir el alcance",
+        "aumentar views", "aumentar vistas", "mejorar engagement",
+    ]):
+        plan["intent"] = "improvements"
+    if any(phrase in q for phrase in [
+        "temas mas hablados", "temas mas mencionados", "temas principales",
+        "temas del canal",
+    ]):
         plan["intent"] = "topic_analysis"
-    if "mejor interaccion" in q and "tema" in q:
+        plan["order_by"] = "views"
+    if ("tema" in q or "temas" in q) and any(phrase in q for phrase in [
+        "mejor interaccion", "mas engagement", "mejor engagement",
+    ]):
         plan["intent"] = "topic_analysis"
+        plan["order_by"] = "engagement"
     if "top" in q and ("video" in q or "videos" in q):
         plan["intent"] = "ranking"
         plan["order_by"] = detect_order_by(question, default="views")
@@ -1350,6 +1413,11 @@ Reglas:
             plan["duration_type"] = duration_type
     if "superaron" in q and ("prediccion" in q or "modelo" in q):
         plan["intent"] = "ml_overperforming"
+    if any(phrase in q for phrase in [
+        "por debajo de la prediccion", "peor de lo esperado",
+        "menos de lo esperado", "debajo del modelo",
+    ]):
+        plan["intent"] = "ml_underperforming"
     if ("modelo ml" in q or "usamos ml" in q or "usamos un modelo" in q or "en que parte" in q) and "modelo" in q:
         plan["intent"] = "ml_explanation"
     if looks_like_upload_day_question(question):
@@ -1389,6 +1457,7 @@ def generate_final_answer(
 - Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views y likes.
 - Si el resultado trae "context_window_text", usalo para entender el significado, pero cita principalmente el fragmento central "segment_text".
 - Si una palabra coloquial puede tener doble sentido, aclara la lectura probable sin inventar.
+- Si la pregunta dice "en que tema se hablo de X", primero di la categoria probable usando "tema_legible" y "perfil_busqueda_contextual"; despues muestra los videos/minutos.
 - Menciona views y likes solo como apoyo, sin analisis largo.
 - Di explicitamente que el minuto es aproximado.
 - No agregues recomendaciones si el usuario solo pregunto donde se hablo del tema.
@@ -1572,7 +1641,12 @@ Reglas:
 - No incluyas candidatos con relevance menor a 0.25 salvo que no haya mejores opciones.
 """
     try:
-        text = gemini_generate(prompt, temperature=0.05, response_mime_type="application/json")
+        text = gemini_generate(
+            prompt,
+            temperature=0.05,
+            response_mime_type="application/json",
+            models=model_chain(GEMINI_RERANK_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODEL),
+        )
         payload = parse_json_payload(text)
     except Exception:
         return rows[:limit]
@@ -1711,23 +1785,33 @@ class RAGYouTubeAgent:
 
         if intent == "related_videos":
             topic_profile = build_mexican_topic_profile(topic)
-            semantic = add_rank_and_reason(
-                self._semantic_topic_moments(topic, filters=filters, limit=max(limit, 10)),
+            semantic = self._semantic_topic_moments(
+                topic,
+                filters=filters,
+                limit=max(limit, 10),
+            )
+            lexical = self.retriever.search_videos(
+                topic,
+                filters=filters,
                 order_by=order_by,
-            )[:limit]
-            lexical = add_rank_and_reason(
-                self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=limit),
+                limit=max(limit, 10),
+            )
+            merged_results = self._merge_related_video_results(
+                semantic_results=semantic,
+                lexical_results=lexical,
                 order_by=order_by,
+                limit=limit,
             )
             context = {
                 "tipo": "videos_relacionados_hibridos",
                 "tema": topic,
                 "perfil_busqueda_contextual": topic_profile,
                 "criterio_orden": (
-                    f"Primero se filtra por relacion semantica con '{topic}'. "
-                    f"Tambien se consideran alias de lexico mexicano. Despues se ordena por {order_by}, usando views y engagement como desempate."
+                    f"Se combinaron coincidencias semanticas en transcripciones y busqueda textual expandida con lexico mexicano. "
+                    f"Despues se priorizo por relacion con el tema, {order_by}, views y engagement."
                 ),
-                "resultados": semantic or lexical,
+                "resultados": merged_results,
+                "resultados_semanticos": semantic,
                 "resultados_lexicos_bigquery": lexical,
             }
             return generate_final_answer(question, context, history=history, response_mode="growth_rank")
@@ -1808,18 +1892,33 @@ class RAGYouTubeAgent:
             }
             return generate_final_answer(question, context, history=history, response_mode="ml")
 
-        semantic = self._semantic_topic_moments(topic or question, filters=filters, limit=5)
+        fallback_topic = topic or question
+        semantic = self._semantic_topic_moments(fallback_topic, filters=filters, limit=8)
+        lexical = self.retriever.search_videos(
+            fallback_topic,
+            filters=filters,
+            order_by=order_by,
+            limit=8,
+        )
+        merged_results = self._merge_related_video_results(
+            semantic_results=semantic,
+            lexical_results=lexical,
+            order_by=order_by,
+            limit=5,
+        )
         context = {
             "tipo": "fallback_hibrido",
             "pregunta": question,
-            "perfil_busqueda_contextual": build_mexican_topic_profile(topic or question),
-            "resultados_semanticos": semantic,
-            "resultados_bigquery": add_rank_and_reason(
-                self.retriever.search_videos(topic or question, filters=filters, order_by=order_by, limit=5),
-                order_by=order_by,
+            "perfil_busqueda_contextual": build_mexican_topic_profile(fallback_topic),
+            "criterio_orden": (
+                "Como la intencion no fue totalmente clara, se combinaron transcripciones, "
+                "busqueda textual expandida con jerga mexicana, views y engagement."
             ),
+            "resultados": merged_results,
+            "resultados_semanticos": semantic,
+            "resultados_bigquery": lexical,
         }
-        return generate_final_answer(question, context, history=history)
+        return generate_final_answer(question, context, history=history, response_mode="growth_rank" if merged_results else "normal")
 
     def _semantic_topic_moments(
         self,
@@ -1859,6 +1958,124 @@ class RAGYouTubeAgent:
                 "views y engagement."
             ),
             metric_key="rerank_relevance",
+        )
+
+    def _semantic_growth_score(self, row: dict[str, Any]) -> float:
+        lexical_hits = safe_float(row.get("lexical_hits"))
+        score_semantico = safe_float(row.get("score_semantico"))
+        score_total = safe_float(row.get("score_total"))
+        rerank_relevance = safe_float(row.get("rerank_relevance"))
+        views = safe_float(row.get("views"))
+        engagement = safe_float(row.get("engagement"))
+        likes = safe_float(row.get("likes"))
+        comentarios = safe_float(row.get("comentarios"))
+
+        views_score = math.log10(views + 1) / 7
+        likes_score = math.log10(likes + 1) / 6
+        comments_score = math.log10(comentarios + 1) / 5
+        lexical_score = min(lexical_hits, 4) / 4
+        engagement_score = min(engagement, 100) / 100
+
+        return (
+            rerank_relevance * 0.25
+            + score_semantico * 0.30
+            + score_total * 0.15
+            + lexical_score * 0.12
+            + views_score * 0.08
+            + engagement_score * 0.05
+            + likes_score * 0.03
+            + comments_score * 0.02
+        )
+
+    def _merge_related_video_results(
+        self,
+        semantic_results: list[dict[str, Any]],
+        lexical_results: list[dict[str, Any]],
+        order_by: str = "views",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        merged_by_video: dict[str, dict[str, Any]] = {}
+
+        for row in semantic_results or []:
+            video_id = str(row.get("video_id") or row.get("url_video") or row.get("titulo_video") or "")
+            if not video_id:
+                continue
+            item = dict(row)
+            item["fuente_resultado"] = "semantico_transcripcion"
+            item["match_semantico"] = True
+            item["match_lexical"] = False
+            merged_by_video[video_id] = item
+
+        for row in lexical_results or []:
+            video_id = str(row.get("video_id") or row.get("url_video") or row.get("titulo_video") or "")
+            if not video_id:
+                continue
+
+            if video_id in merged_by_video:
+                existing = merged_by_video[video_id]
+                existing["match_lexical"] = True
+                existing["fuente_resultado"] = "semantico_y_lexical"
+                for key, value in row.items():
+                    if existing.get(key) in {None, "", 0} and value not in {None, ""}:
+                        existing[key] = value
+            else:
+                item = dict(row)
+                item["fuente_resultado"] = "lexical_bigquery"
+                item["match_semantico"] = False
+                item["match_lexical"] = True
+                merged_by_video[video_id] = item
+
+        ranked = sorted(
+            merged_by_video.values(),
+            key=lambda row: self._related_video_score(row, order_by=order_by),
+            reverse=True,
+        )
+
+        final = []
+        metric = ALLOWED_ORDER_COLUMNS.get(order_by, "views")
+        for rank, row in enumerate(ranked[:limit], start=1):
+            item = dict(row)
+            item["rank"] = rank
+            item["criterio_prioridad"] = (
+                f"Ordenado por relacion con el tema, {order_by}, views y engagement. "
+                "Se favorecen videos que aparecen tanto en busqueda semantica como textual."
+            )
+            item["score_relacionado"] = round(self._related_video_score(row, order_by=order_by), 4)
+            item["metrica_principal"] = item.get(metric)
+            final.append(item)
+
+        return final
+
+    def _related_video_score(self, row: dict[str, Any], order_by: str = "views") -> float:
+        metric = ALLOWED_ORDER_COLUMNS.get(order_by, "views")
+        metric_value = safe_float(row.get(metric))
+        views = safe_float(row.get("views"))
+        engagement = safe_float(row.get("engagement"))
+        likes = safe_float(row.get("likes"))
+        comentarios = safe_float(row.get("comentarios"))
+        lexical_hits = safe_float(row.get("lexical_hits"))
+
+        semantic_bonus = 0.14 if row.get("match_semantico") else 0
+        lexical_bonus = 0.08 if row.get("match_lexical") else 0
+        hybrid_bonus = 0.14 if row.get("match_semantico") and row.get("match_lexical") else 0
+        metric_score = math.log10(metric_value + 1) / 7
+        views_score = math.log10(views + 1) / 7
+        likes_score = math.log10(likes + 1) / 6
+        comments_score = math.log10(comentarios + 1) / 5
+        engagement_score = min(engagement, 100) / 100
+        lexical_score = min(lexical_hits, 4) / 4
+
+        return (
+            semantic_bonus
+            + lexical_bonus
+            + hybrid_bonus
+            + self._semantic_growth_score(row) * 0.42
+            + lexical_score * 0.08
+            + metric_score * 0.12
+            + views_score * 0.11
+            + engagement_score * 0.05
+            + likes_score * 0.03
+            + comments_score * 0.02
         )
 
     def _rank_prediction_rows(self, rows: list[dict[str, Any]], order: str) -> list[dict[str, Any]]:
