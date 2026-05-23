@@ -915,7 +915,7 @@ class BigQueryYouTubeRetriever:
                     IFNULL(previous_segment_text, ''), ' ',
                     IFNULL(segment_text, ''), ' ',
                     IFNULL(next_segment_text, '')
-                  ), NFD), r'\\p{{M}}', ''),
+                  ), NFD), '\\\\p{{M}}', ''),
                   term
                 ) > 0
             ) AS lexical_hits,
@@ -1013,7 +1013,7 @@ class BigQueryYouTubeRetriever:
                   IFNULL(transcripcion_video, ''), ' ',
                   IFNULL(tema_legible, ''), ' ',
                   IFNULL(descripcion_segmento, '')
-                  ), NFD), r'\\p{{M}}', ''),
+                  ), NFD), '\\\\p{{M}}', ''),
                   @{name}
                 ) > 0
                 """)
