@@ -833,7 +833,7 @@ class BigQueryYouTubeRetriever:
                 params.append(bigquery.ScalarQueryParameter("min_engagement", "FLOAT64", filters.min_engagement))
 
         sql = f"""
-        WITH base AS (
+        WITH scored AS (
           SELECT
             video_id,
             segment_id,
@@ -854,51 +854,6 @@ class BigQueryYouTubeRetriever:
             tema_legible,
             descripcion_segmento,
             segment_text,
-            estimated_start_seconds,
-            estimated_end_seconds,
-            estimated_start_mmss,
-            estimated_end_mmss,
-            LAG(segment_text) OVER (
-              PARTITION BY video_id
-              ORDER BY estimated_start_seconds, segment_id
-            ) AS previous_segment_text,
-            LEAD(segment_text) OVER (
-              PARTITION BY video_id
-              ORDER BY estimated_start_seconds, segment_id
-            ) AS next_segment_text,
-            embedding
-          FROM {QUOTED_SEGMENTS_TABLE_ID}
-          WHERE {" AND ".join(clauses)}
-            AND ARRAY_LENGTH(embedding) = ARRAY_LENGTH(@query_embedding)
-        ),
-        scored AS (
-          SELECT
-            video_id,
-            segment_id,
-            titulo_video,
-            url_video,
-            fecha_publicacion,
-            duracion_minutos,
-            tipo_duracion,
-            formato_video,
-            views,
-            likes,
-            comentarios,
-            engagement,
-            like_rate,
-            comment_rate,
-            views_por_dia,
-            views_por_minuto,
-            tema_legible,
-            descripcion_segmento,
-            segment_text,
-            previous_segment_text,
-            next_segment_text,
-            CONCAT(
-              IFNULL(previous_segment_text, ''), CHR(10),
-              IFNULL(segment_text, ''), CHR(10),
-              IFNULL(next_segment_text, '')
-            ) AS context_window_text,
             estimated_start_seconds,
             estimated_end_seconds,
             estimated_start_mmss,
@@ -912,9 +867,7 @@ class BigQueryYouTubeRetriever:
                     IFNULL(titulo_video, ''), ' ',
                     IFNULL(tema_legible, ''), ' ',
                     IFNULL(descripcion_segmento, ''), ' ',
-                    IFNULL(previous_segment_text, ''), ' ',
-                    IFNULL(segment_text, ''), ' ',
-                    IFNULL(next_segment_text, '')
+                    IFNULL(segment_text, '')
                   )),
                   term
                 ) > 0
@@ -929,7 +882,9 @@ class BigQueryYouTubeRetriever:
               SQRT((SELECT SUM(POW(q_value, 2)) FROM UNNEST(@query_embedding) AS q_value))
               * SQRT((SELECT SUM(POW(e_value, 2)) FROM UNNEST(embedding) AS e_value))
             ) AS score_semantico
-          FROM base
+          FROM {QUOTED_SEGMENTS_TABLE_ID}
+          WHERE {" AND ".join(clauses)}
+            AND ARRAY_LENGTH(embedding) = ARRAY_LENGTH(@query_embedding)
         )
         SELECT
           *,
@@ -1452,7 +1407,7 @@ def generate_final_answer(
 - Muestra maximo 5 resultados numerados.
 - Respeta EXACTAMENTE el orden de "resultados"; ya viene priorizado por relevancia, views y potencial de alcance.
 - Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views y likes.
-- Si el resultado trae "context_window_text", usalo para entender el significado, pero cita principalmente el fragmento central "segment_text".
+- Usa el fragmento "segment_text" como evidencia principal del resultado.
 - Si una palabra coloquial puede tener doble sentido, aclara la lectura probable sin inventar.
 - Si la pregunta dice "en que tema se hablo de X", primero di la categoria probable usando "tema_legible" y "perfil_busqueda_contextual"; despues muestra los videos/minutos.
 - Menciona views y likes solo como apoyo, sin analisis largo.
@@ -1603,7 +1558,7 @@ def rerank_segments_for_mexican_context(
             "score_semantico": row.get("score_semantico"),
             "lexical_hits": row.get("lexical_hits"),
             "fragmento": str(row.get("segment_text") or "")[:550],
-            "contexto_alrededor": str(row.get("context_window_text") or "")[:1000],
+            "contexto_alrededor": str(row.get("segment_text") or "")[:1000],
         })
 
     profile = build_mexican_topic_profile(topic)
