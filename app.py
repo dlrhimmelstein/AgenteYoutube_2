@@ -254,17 +254,17 @@ metrics, segment_stats = load_sidebar_stats()
 
 @st.cache_data(ttl=600)
 def plot_views_by_weekday():
-    """Gráfica de barras: vistas promedio por día de la semana """
+    """Gráfica de barras: vistas promedio por día de la semana (timestamp string)"""
     try:
-        
         query = f"""
         SELECT 
-            FORMAT_DATE('%A', fecha_publicacion) as dia_semana,
+            FORMAT_TIMESTAMP('%A', SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion)) as dia_semana,
             AVG(views) as avg_views,
             COUNT(*) as num_videos
         FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
         WHERE channel_id = '{CHANNEL_ID}'
           AND fecha_publicacion IS NOT NULL
+          AND SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) IS NOT NULL
         GROUP BY dia_semana
         ORDER BY 
             CASE dia_semana
