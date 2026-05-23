@@ -860,8 +860,8 @@ class BigQueryYouTubeRetriever:
             previous_segment_text,
             next_segment_text,
             CONCAT(
-              IFNULL(previous_segment_text, ''), '\n',
-              IFNULL(segment_text, ''), '\n',
+              IFNULL(previous_segment_text, ''), ' ',
+              IFNULL(segment_text, ''), ' ',
               IFNULL(next_segment_text, '')
             ) AS context_window_text,
             estimated_start_seconds,
