@@ -1782,46 +1782,46 @@ class RAGYouTubeAgent:
         )
 
     def _semantic_growth_score(self, row: dict[str, Any]) -> float:
-    """
-    Calcula un score híbrido para ordenar fragmentos de transcripción.
-
-    Balance:
-    - Relevancia semántica: qué tanto se parece el fragmento al tema.
-    - Coincidencias textuales: si aparecen palabras clave del usuario.
-    - Views: potencial de alcance.
-    - Engagement: señales de interacción.
-    - Likes y comentarios: apoyo secundario.
-    """
-
-    lexical_hits = safe_float(row.get("lexical_hits"))
-    score_semantico = safe_float(row.get("score_semantico"))
-    score_total = safe_float(row.get("score_total"))
-
-    views = safe_float(row.get("views"))
-    engagement = safe_float(row.get("engagement"))
-    likes = safe_float(row.get("likes"))
-    comentarios = safe_float(row.get("comentarios"))
-
-    # Normalizaciones suaves para que views no aplaste la relevancia.
-    views_score = math.log10(views + 1) / 7
-    likes_score = math.log10(likes + 1) / 6
-    comments_score = math.log10(comentarios + 1) / 5
-
-    # Limitar lexical_hits para evitar que una repetición excesiva domine todo.
-    lexical_score = min(lexical_hits, 4) / 4
-
-    # Engagement puede venir como porcentaje, ratio o número agregado.
-    engagement_score = min(engagement, 100) / 100
-
-    return (
-        score_semantico * 0.45
-        + score_total * 0.20
-        + lexical_score * 0.15
-        + views_score * 0.10
-        + engagement_score * 0.05
-        + likes_score * 0.03
-        + comments_score * 0.02
-    )
+        """
+        Calcula un score híbrido para ordenar fragmentos de transcripción.
+    
+        Balance:
+        - Relevancia semántica: qué tanto se parece el fragmento al tema.
+        - Coincidencias textuales: si aparecen palabras clave del usuario.
+        - Views: potencial de alcance.
+        - Engagement: señales de interacción.
+        - Likes y comentarios: apoyo secundario.
+        """
+    
+        lexical_hits = safe_float(row.get("lexical_hits"))
+        score_semantico = safe_float(row.get("score_semantico"))
+        score_total = safe_float(row.get("score_total"))
+    
+        views = safe_float(row.get("views"))
+        engagement = safe_float(row.get("engagement"))
+        likes = safe_float(row.get("likes"))
+        comentarios = safe_float(row.get("comentarios"))
+    
+        # Normalizaciones suaves para que views no aplaste la relevancia.
+        views_score = math.log10(views + 1) / 7
+        likes_score = math.log10(likes + 1) / 6
+        comments_score = math.log10(comentarios + 1) / 5
+    
+        # Limitar lexical_hits para evitar que una repetición excesiva domine todo.
+        lexical_score = min(lexical_hits, 4) / 4
+    
+        # Engagement puede venir como porcentaje, ratio o número agregado.
+        engagement_score = min(engagement, 100) / 100
+    
+        return (
+            score_semantico * 0.45
+            + score_total * 0.20
+            + lexical_score * 0.15
+            + views_score * 0.10
+            + engagement_score * 0.05
+            + likes_score * 0.03
+            + comments_score * 0.02
+        )
 
     def _merge_related_video_results(
         self,
