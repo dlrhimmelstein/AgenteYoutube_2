@@ -254,40 +254,66 @@ metrics, segment_stats = load_sidebar_stats()
 
 @st.cache_data(ttl=600)
 def plot_views_by_weekday():
-    """Gráfica de barras: vistas promedio por día de la semana (Plotly)"""
+    """Gráfica de barras: vistas promedio por día de la semana """
     try:
+        
         query = f"""
-        SELECT dia_semana_publicacion, AVG(views) as avg_views
-        FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
-        WHERE channel_title = 'Las Damitas Histeria' AND dia_semana_publicacion IS NOT NULL
-        GROUP BY dia_semana_publicacion
-        ORDER BY avg_views DESC
+        SELECT 
+            FORMAT_DATE('%A', fecha_publicacion) as dia_semana,
+            AVG(views) as avg_views,
+            COUNT(*) as num_videos
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY dia_semana
+        ORDER BY 
+            CASE dia_semana
+                WHEN 'Monday' THEN 1
+                WHEN 'Tuesday' THEN 2
+                WHEN 'Wednesday' THEN 3
+                WHEN 'Thursday' THEN 4
+                WHEN 'Friday' THEN 5
+                WHEN 'Saturday' THEN 6
+                WHEN 'Sunday' THEN 7
+            END
         """
         result = retriever.client.query(query).result()
-        df = pd.DataFrame([dict(row) for row in result])
-        if df.empty:
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar vistas por día.")
             return None
+        
+        df = pd.DataFrame(rows)
+        # Traducir días al español
+        dias_es = {
+            'Monday': 'Lunes', 'Tuesday': 'Martes', 'Wednesday': 'Miércoles',
+            'Thursday': 'Jueves', 'Friday': 'Viernes', 'Saturday': 'Sábado', 'Sunday': 'Domingo'
+        }
+        df['dia_semana'] = df['dia_semana'].map(dias_es).fillna(df['dia_semana'])
+        
         import plotly.express as px
         fig = px.bar(
             df,
-            x='dia_semana_publicacion',
+            x='dia_semana',
             y='avg_views',
             title="📅 Vistas promedio por día de publicación",
-            labels={'dia_semana_publicacion': 'Día', 'avg_views': 'Vistas promedio'},
+            labels={'dia_semana': 'Día', 'avg_views': 'Vistas promedio'},
             color='avg_views',
-            color_continuous_scale='Reds'
+            color_continuous_scale='Reds',
+            text='num_videos'
         )
+        fig.update_traces(textposition='outside')
         fig.update_layout(
             plot_bgcolor='#1e1e1e',
             paper_bgcolor='#1e1e1e',
             font_color='white',
-            title_font_color='white'
+            title_font_color='white',
+            xaxis=dict(tickangle=0)
         )
         return fig
     except Exception as e:
         st.error(f"Error en gráfica de vistas por día: {e}")
         return None
-
 
 # =========================
 # 5. ESTILOS GENERALES DE LA APP
