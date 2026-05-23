@@ -908,14 +908,14 @@ class BigQueryYouTubeRetriever:
               FROM UNNEST(@query_terms) AS term
               WHERE term != ''
                 AND STRPOS(
-                  LOWER(TRANSLATE(CONCAT(
+                  LOWER(CONCAT(
                     IFNULL(titulo_video, ''), ' ',
                     IFNULL(tema_legible, ''), ' ',
                     IFNULL(descripcion_segmento, ''), ' ',
                     IFNULL(previous_segment_text, ''), ' ',
                     IFNULL(segment_text, ''), ' ',
                     IFNULL(next_segment_text, '')
-                  ), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')),
+                  )),
                   term
                 ) > 0
             ) AS lexical_hits,
@@ -1007,13 +1007,13 @@ class BigQueryYouTubeRetriever:
                 name = f"term_{idx}"
                 term_clauses.append(f"""
                 STRPOS(
-                  LOWER(TRANSLATE(CONCAT(
+                  LOWER(CONCAT(
                   IFNULL(titulo_video, ''), ' ',
                   IFNULL(descripcion_video, ''), ' ',
                   IFNULL(transcripcion_video, ''), ' ',
                   IFNULL(tema_legible, ''), ' ',
                   IFNULL(descripcion_segmento, '')
-                  ), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN')),
+                  )),
                   @{name}
                 ) > 0
                 """)
