@@ -858,7 +858,7 @@ with col_der:
                 unsafe_allow_html=True,
             )
             try:
-                answer = agent.answer(prompt, history=history_for_agent)
+                answer = agent.answer(prompt, history=history_for_agent_Liz)
                 thinking_placeholder.empty()
                 st.markdown(answer)
         
