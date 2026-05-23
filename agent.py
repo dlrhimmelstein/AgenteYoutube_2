@@ -47,8 +47,8 @@ SEGMENTS_TABLE_ID = f"{PROJECT_ID}.{DATASET_ID}.{SEGMENTS_TABLE_NAME}"
 QUOTED_SEGMENTS_TABLE_ID = f"`{SEGMENTS_TABLE_ID}`"
 ML_MODEL_ID = f"`{PROJECT_ID}.{DATASET_ID}.video_views_model`"
 
-GEMINI_MODEL = _secret_or_env("GEMINI_MODEL", "gemini-3.5-flash")
-GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", "gemini-2.5-pro")
+GEMINI_MODEL = _secret_or_env("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", "gemini-flash-latest")
 GEMINI_EMBEDDING_MODEL = _secret_or_env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 LOCAL_EMBEDDING_MODEL = _secret_or_env("LOCAL_EMBEDDING_MODEL", "")
 
