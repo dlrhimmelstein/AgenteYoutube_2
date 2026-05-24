@@ -1276,7 +1276,8 @@ with col_izq:
     with col2:
         min_views = st.number_input("Vistas mínimas (miles)", min_value=0, value=100, step=50, key="min_views") * 1000
     with col3:
-        min_engagement = st.slider("Engagement mínimo (%)", 0.0, 15.0, 0.0, 0.5, key="min_eng") / 100
+        min_engagement_pct = st.slider("Engagement mínimo (%)", 0.0, 100.0, 0.0, 5.0, key="min_eng")
+        min_engagement = min_engagement_pct / 100.0  # convertir a decimal (ej: 10% -> 0.10)
     with col4:
         max_resultados = st.number_input("Mostrar", min_value=5, max_value=50, value=15, step=5, key="max_res")
 
