@@ -255,6 +255,238 @@ def load_sidebar_stats():
 
     return metrics, segment_stats
 
+# ============================================================
+# NUEVAS FUNCIONES: LIKES y WATCH TIME (tema, día, evolución)
+# ============================================================
+
+@st.cache_data(ttl=600)
+def plot_likes_by_topic():
+    """Gráfica de barras horizontales: likes totales por tema"""
+    try:
+        topics = retriever.topic_performance(limit=8, order_by="likes")
+        if not topics:
+            return None
+        df = pd.DataFrame(topics)
+        fig = px.bar(
+            df, x='likes_totales', y='tema_legible', orientation='h',
+            title="👍 Likes totales por tema",
+            labels={'likes_totales': 'Likes', 'tema_legible': 'Tema'},
+            color='likes_totales', color_continuous_scale='Reds'
+        )
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de likes por tema: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_likes_by_weekday():
+    """Gráfica de barras: likes promedio por día de la semana"""
+    try:
+        query = f"""
+        SELECT 
+            FORMAT_TIMESTAMP('%A', SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion)) as dia_semana,
+            AVG(likes) as avg_likes,
+            COUNT(*) as num_videos
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY dia_semana
+        ORDER BY CASE dia_semana
+            WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+            WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 END
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar likes por día.")
+            return None
+        df = pd.DataFrame(rows)
+        dias_es = {'Monday':'Lunes','Tuesday':'Martes','Wednesday':'Miércoles',
+                   'Thursday':'Jueves','Friday':'Viernes','Saturday':'Sábado','Sunday':'Domingo'}
+        df['dia_semana'] = df['dia_semana'].map(dias_es)
+        fig = px.bar(df, x='dia_semana', y='avg_likes',
+                     title="👍 Likes promedio por día de publicación",
+                     labels={'dia_semana':'Día','avg_likes':'Likes promedio'},
+                     color='avg_likes', color_continuous_scale='Reds', text='num_videos')
+        fig.update_traces(textposition='outside')
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de likes por día: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_likes_over_time():
+    """Gráfica de líneas: evolución de likes a lo largo del tiempo"""
+    try:
+        query = f"""
+        SELECT 
+            SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) as fecha_ts,
+            SUM(likes) as likes_diarios
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY fecha_ts
+        ORDER BY fecha_ts ASC
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar evolución de likes.")
+            return None
+        df = pd.DataFrame(rows).dropna(subset=['fecha_ts']).sort_values('fecha_ts')
+        fig = px.line(df, x='fecha_ts', y='likes_diarios',
+                      title="📈 Evolución de likes a través del tiempo",
+                      labels={'fecha_ts':'Fecha','likes_diarios':'Likes diarios'},
+                      markers=True)
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        fig.update_traces(line=dict(color='#e63946', width=2), marker=dict(size=4, color='#ff6b6b'))
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de evolución de likes: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_watchtime_by_topic():
+    """Gráfica de barras horizontales: watch time total por tema (en horas)"""
+    try:
+        # Obtenemos los datos desde topic_performance y calculamos watch_time = views * duracion_minutos / 60
+        # Pero topic_performance no tiene duración, así que necesitamos una consulta personalizada.
+        # Usaremos una consulta directa a BigQuery agregando por tema.
+        query = f"""
+        SELECT 
+            tema_legible,
+            SUM(views * duracion_minutos / 60) as watch_time_horas,
+            COUNT(DISTINCT video_id) as num_videos
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND tema_legible IS NOT NULL
+        GROUP BY tema_legible
+        ORDER BY watch_time_horas DESC
+        LIMIT 8
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar watch time por tema.")
+            return None
+        df = pd.DataFrame(rows)
+        fig = px.bar(df, x='watch_time_horas', y='tema_legible', orientation='h',
+                     title="⏱️ Watch time total por tema (horas)",
+                     labels={'watch_time_horas': 'Horas', 'tema_legible': 'Tema'},
+                     color='watch_time_horas', color_continuous_scale='Reds')
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de watch time por tema: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_watchtime_by_weekday():
+    """Gráfica de barras: watch time promedio por día de la semana (horas)"""
+    try:
+        query = f"""
+        SELECT 
+            FORMAT_TIMESTAMP('%A', SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion)) as dia_semana,
+            AVG(views * duracion_minutos / 60) as avg_watch_time,
+            COUNT(*) as num_videos
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY dia_semana
+        ORDER BY CASE dia_semana
+            WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3
+            WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 END
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar watch time por día.")
+            return None
+        df = pd.DataFrame(rows)
+        dias_es = {'Monday':'Lunes','Tuesday':'Martes','Wednesday':'Miércoles',
+                   'Thursday':'Jueves','Friday':'Viernes','Saturday':'Sábado','Sunday':'Domingo'}
+        df['dia_semana'] = df['dia_semana'].map(dias_es)
+        fig = px.bar(df, x='dia_semana', y='avg_watch_time',
+                     title="⏱️ Watch time promedio por día (horas)",
+                     labels={'dia_semana':'Día','avg_watch_time':'Horas promedio'},
+                     color='avg_watch_time', color_continuous_scale='Reds', text='num_videos')
+        fig.update_traces(textposition='outside')
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de watch time por día: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_watchtime_over_time():
+    """Gráfica de líneas: evolución de watch time diario (horas)"""
+    try:
+        query = f"""
+        SELECT 
+            SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) as fecha_ts,
+            SUM(views * duracion_minutos / 60) as watch_time_diario
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY fecha_ts
+        ORDER BY fecha_ts ASC
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar evolución de watch time.")
+            return None
+        df = pd.DataFrame(rows).dropna(subset=['fecha_ts']).sort_values('fecha_ts')
+        fig = px.line(df, x='fecha_ts', y='watch_time_diario',
+                      title="📈 Evolución de watch time diario (horas)",
+                      labels={'fecha_ts':'Fecha','watch_time_diario':'Horas diarias'},
+                      markers=True)
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        fig.update_traces(line=dict(color='#e63946', width=2), marker=dict(size=4, color='#ff6b6b'))
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de evolución de watch time: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_engagement_over_time():
+    """Gráfica de líneas: evolución de engagement promedio diario"""
+    try:
+        query = f"""
+        SELECT 
+            SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) as fecha_ts,
+            AVG(engagement) as engagement_diario
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY fecha_ts
+        ORDER BY fecha_ts ASC
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar evolución de engagement.")
+            return None
+        df = pd.DataFrame(rows).dropna(subset=['fecha_ts']).sort_values('fecha_ts')
+        fig = px.line(df, x='fecha_ts', y='engagement_diario',
+                      title="📈 Evolución del engagement promedio diario",
+                      labels={'fecha_ts':'Fecha','engagement_diario':'Engagement (%)'},
+                      markers=True)
+        fig.update_layout(plot_bgcolor='#1e1e1e', paper_bgcolor='#1e1e1e',
+                          font_color='white', title_font_color='white')
+        fig.update_traces(line=dict(color='#e63946', width=2), marker=dict(size=4, color='#ff6b6b'))
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de evolución de engagement: {e}")
+        return None
 
 metrics, segment_stats = load_sidebar_stats()
 
@@ -389,6 +621,50 @@ def plot_engagement_by_weekday():
         return fig
     except Exception as e:
         st.error(f"Error en gráfica de engagement por día: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def plot_views_over_time():
+    """Gráfica de líneas: evolución de views a lo largo del tiempo"""
+    try:
+        query = f"""
+        SELECT 
+            SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) as fecha_ts,
+            SUM(views) as views_diarias
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+        GROUP BY fecha_ts
+        ORDER BY fecha_ts ASC
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar evolución de vistas.")
+            return None
+        
+        df = pd.DataFrame(rows)
+        df = df.dropna(subset=['fecha_ts'])
+        df = df.sort_values('fecha_ts')
+        
+        import plotly.express as px
+        fig = px.line(
+            df, x='fecha_ts', y='views_diarias',
+            title="📈 Evolución de visualizaciones a través del tiempo",
+            labels={'fecha_ts': 'Fecha', 'views_diarias': 'Vistas diarias'},
+            markers=True
+        )
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='white',
+            title_font_color='white',
+            xaxis=dict(tickangle=45)
+        )
+        fig.update_traces(line=dict(color='#e63946', width=2), marker=dict(size=4, color='#ff6b6b'))
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de evolución de vistas: {e}")
         return None
 
 
@@ -703,6 +979,22 @@ st.markdown(
         color: #000000 !important;        /* Cambiado a negro */
         font-weight: bold !important;     /* Añadido negritas */
     }
+
+    /* Botones del panel interactivo */
+    .stButton button {
+        background-color: #2c2c2c !important;
+        color: #ffffff !important;
+        border: 1px solid #e63946 !important;
+        border-radius: 40px !important;
+        font-weight: 600 !important;
+        transition: all 0.2s ease !important;
+    }
+    .stButton button:hover {
+        background-color: #e63946 !important;
+        color: #ffffff !important;
+        border-color: #ffffff !important;
+        transform: translateY(-2px);
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -717,7 +1009,6 @@ with col_izq:
     # 6. HEADER
     # =========================
 
-    from google.cloud import bigquery
 
     @st.cache_data(ttl=600)
     def get_dashboard_data():
@@ -847,6 +1138,7 @@ with col_izq:
                     unsafe_allow_html=True,
                 )
 
+    
     # --- Tendencias de contenido ---
     if topics:
         st.markdown("## 📊 Tendencias de Contenido")
@@ -866,67 +1158,109 @@ with col_izq:
                     unsafe_allow_html=True,
                 )
 
-    # --- SECCIÓN DE GRÁFICAS INTERACTIVAS ---
+    # ==================== PANEL INTERACTIVO DE GRÁFICAS ====================
+    st.markdown("## 🎛️ Panel de análisis interactivo")
 
-    st.markdown("## 📊 Análisis Visual Avanzado")
+    # --- Botones para seleccionar métrica ---
+    st.markdown("### 📈 Selecciona la métrica:")
+    col_metricas = st.columns(4)
+    metricas_opciones = ["Views", "Engagement", "Likes", "Watch Time"]
+    metricas_icons = ["👁️", "❤️", "👍", "⏱️"]
 
-    tipo_grafica = st.selectbox(
-        "Selecciona la métrica a visualizar:",
-        ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día", "Engagement promedio por día"),
-        key="selector_graficas",
-    )
+    for idx, (metrica, icono) in enumerate(zip(metricas_opciones, metricas_icons)):
+        with col_metricas[idx]:
+            if st.button(f"{icono} {metrica}", key=f"btn_{metrica}", use_container_width=True):
+                st.session_state['metrica_seleccionada'] = metrica.lower()
 
-    if tipo_grafica == "Vistas por tema":
-        fig = plot_views_by_topic()
+    # Valor por defecto
+    if 'metrica_seleccionada' not in st.session_state:
+        st.session_state['metrica_seleccionada'] = 'views'
+
+    # --- Botones para seleccionar tipo de visualización ---
+    st.markdown("### 📊 Visualizar por:")
+    col_tipos = st.columns(3)
+    tipos_opciones = ["Tema", "Día de semana", "Evolución temporal"]
+    tipos_icons = ["📂", "📅", "📈"]
+
+    for idx, (tipo, icono) in enumerate(zip(tipos_opciones, tipos_icons)):
+        with col_tipos[idx]:
+            if st.button(f"{icono} {tipo}", key=f"btn_{tipo}", use_container_width=True):
+                st.session_state['tipo_visualizacion'] = tipo.lower()
+
+    if 'tipo_visualizacion' not in st.session_state:
+        st.session_state['tipo_visualizacion'] = 'tema'
+
+    # --- Mostrar la gráfica según selección ---
+    st.markdown("---")
+    st.markdown(f"#### 🔍 Mostrando: **{st.session_state['metrica_seleccionada'].capitalize()}** por **{st.session_state['tipo_visualizacion']}**")
+
+    # Función maestra para generar gráfica
+    def mostrar_grafica_dinamica(metrica, tipo):
+    # Normalizar tipo (puede venir con espacios o guiones)
+        tipo = tipo.lower().replace(' ', '_')
+        if tipo == 'tema':
+            if metrica == 'views':
+                fig = plot_views_by_topic()
+            elif metrica == 'engagement':
+                fig = plot_engagement_by_topic()
+            elif metrica == 'likes':
+                fig = plot_likes_by_topic()
+            elif metrica == 'watch time':
+                fig = plot_watchtime_by_topic()
+            else:
+                st.info(f"📌 {metrica.capitalize()} por tema no disponible aún.")
+                return None
+        elif tipo == 'día_de_semana' or tipo == 'día de semana':
+            if metrica == 'views':
+                fig = plot_views_by_weekday()
+            elif metrica == 'engagement':
+                fig = plot_engagement_by_weekday()
+            elif metrica == 'likes':
+                fig = plot_likes_by_weekday()
+            elif metrica == 'watch time':
+                fig = plot_watchtime_by_weekday()
+            else:
+                st.info(f"📌 {metrica.capitalize()} por día no disponible aún.")
+                return None
+        elif tipo == 'evolución_temporal' or tipo == 'evolución temporal':
+            if metrica == 'views':
+                fig = plot_views_over_time()
+            elif metrica == 'engagement':
+                fig = plot_engagement_over_time()
+            elif metrica == 'likes':
+                fig = plot_likes_over_time()
+            elif metrica == 'watch time':
+                fig = plot_watchtime_over_time()
+            else:
+                st.info(f"📌 Evolución temporal de {metrica.capitalize()} no disponible aún.")
+                return None
+        else:
+            st.info("Tipo de visualización no reconocido.")
+            return None
+        
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No hay datos suficientes para mostrar vistas por tema.")
-    elif tipo_grafica == "Engagement por tema":
-        fig = plot_engagement_by_topic()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar engagement por tema.")
-    elif tipo_grafica == "Evolución de suscriptores":
-        fig = plot_subscriber_growth()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos históricos de suscriptores para mostrar evolución.")
-    elif tipo_grafica == "Vistas promedio por día":
-        fig = plot_views_by_weekday()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar vistas por día.")
-    elif tipo_grafica == "Engagement promedio por día":
-        fig = plot_engagement_by_weekday()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar engagement por día.")
+            st.info("⚠️ No se pudo generar la gráfica. Puede faltar datos en la tabla.")
+
+    # Ejecutar la visualización
+    mostrar_grafica_dinamica(st.session_state['metrica_seleccionada'], st.session_state['tipo_visualizacion'])
 
 # Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
 with col_der:
-
     # =========================
-    # 9. MEMORIA
+    # MEMORIA Y CHAT
     # =========================
-
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # =========================
-    # 11. CHAT
-    # =========================
-    prompt = st.chat_input("Pregunta sobre el canal... ej: Que temas tuvieron mas engagement?")
+    # Mostrar historial de mensajes
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # -- Capturar prompts de los botones del sidebar --
-    if "prompt_sugerido" in st.session_state:
-        prompt = st.session_state.pop("prompt_sugerido")
-
-    if not st.session_state.messages and not prompt:
+    # Bienvenida si no hay mensajes (solo se muestra cuando está vacío)
+    if not st.session_state.messages:
         st.markdown(
             """
             <div class="empty-logo">
@@ -937,14 +1271,12 @@ with col_der:
             """,
             unsafe_allow_html=True,
         )
-
         st.markdown('<div class="empty-title">Hola, soy tu agente de YouTube</div>', unsafe_allow_html=True)
-
         st.markdown(
             """
             <div class="empty-text">
                 Puedo analizar el rendimiento de <b>Las Damitas Histeria</b>, encontrar
-                en que episodio hablaron de un tema y recomendarte decisiones con datos.
+                en qué episodio hablaron de un tema y recomendarte decisiones con datos.
             </div>
             """,
             unsafe_allow_html=True,
@@ -955,92 +1287,38 @@ with col_der:
         st.session_state.messages = []
         st.rerun()
 
+    # Input del chat
+    prompt = st.chat_input("Pregunta sobre el canal... ej: ¿Qué temas tuvieron más engagement?")
+
+    # Procesar el prompt
     if prompt:
         history_for_agent = st.session_state.messages[-8:]
         st.session_state.messages.append({"role": "user", "content": prompt})
-
-        with st.container(height=360, border=False):
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            with st.chat_message("assistant"):
-                thinking_placeholder = st.empty()
-                thinking_placeholder.markdown(
-                    """
-                    <div class="thinking-box">
-                        <div class="thinking-dot"></div>
-                        Analizando métricas y transcripciones...
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            thinking_placeholder = st.empty()
+            thinking_placeholder.markdown(
+                """
+                <div class="thinking-box">
+                    <div class="thinking-dot"></div>
+                    Analizando métricas y transcripciones...
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            try:
+                answer = agent.answer(prompt, history=history_for_agent)
+                thinking_placeholder.empty()
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+            except Exception as exc:
+                thinking_placeholder.empty()
+                error_message = (
+                    "**Ocurrió un error al procesar tu pregunta.**\n\n"
+                    f"`{str(exc)}`\n\n"
+                    "Revisa Secrets, permisos de BigQuery y la tabla de segmentos."
                 )
-                try:
-                    answer = agent.answer(prompt, history=history_for_agent)
-                    thinking_placeholder.empty()
-                    st.markdown(answer)
-
-                    # Detectar intención de gráfica
-                    prompt_lower = prompt.lower()
-                    mostrar_botones = False
-                    tipo_grafica = None
-
-                    if any(p in prompt_lower for p in ["tema", "tópico", "categoría"]):
-                        if any(p in prompt_lower for p in ["vista", "views", "visualizac"]):
-                            mostrar_botones = True
-                            tipo_grafica = "topics_views"
-                        elif any(p in prompt_lower for p in ["engagement", "interacción"]):
-                            mostrar_botones = True
-                            tipo_grafica = "topics_engagement"
-                    elif any(p in prompt_lower for p in ["evolución", "crecimiento", "suscriptor", "tiempo"]):
-                        mostrar_botones = True
-                        tipo_grafica = "suscriptores_line"
-
-                    if mostrar_botones:
-                        st.markdown("### 📊 Visualización de datos")
-                        col_b1, col_b2 = st.columns(2)
-                        with col_b1:
-                            if st.button("📊 Ver gráfica de barras", key="grafica_barras", use_container_width=True):
-                                if tipo_grafica == "topics_views":
-                                    fig = generar_grafica_barras_topics("views", "Vistas totales por tema")
-                                    if fig:
-                                        st.pyplot(fig)
-                                    else:
-                                        st.info("No hay datos suficientes para generar la gráfica.")
-                                elif tipo_grafica == "topics_engagement":
-                                    fig = generar_grafica_barras_topics("engagement", "Engagement promedio por tema")
-                                    if fig:
-                                        st.pyplot(fig)
-                                    else:
-                                        st.info("No hay datos suficientes para generar la gráfica.")
-                        with col_b2:
-                            if st.button("📈 Ver gráfica de líneas", key="grafica_lineas", use_container_width=True):
-                                if tipo_grafica == "suscriptores_line":
-                                    fig = generar_grafica_lineas_suscriptores()
-                                    if fig:
-                                        st.pyplot(fig)
-                                    else:
-                                        st.info("No hay datos históricos de suscriptores para mostrar evolución.")
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                except Exception as exc:
-                    thinking_placeholder.empty()
-                    error_message = (
-                        "**Ocurrió un error al procesar tu pregunta.**\n\n"
-                        f"`{str(exc)}`\n\n"
-                        "Revisa Secrets, permisos de BigQuery y la tabla de segmentos."
-                    )
-                    st.error(error_message)
-                    st.exception(exc)
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
-
-    # =========================
-    # 10. HISTORIAL
-    # =========================
-
-    history_messages = st.session_state.messages[:-2] if prompt else st.session_state.messages
-
-    if history_messages:
-        st.caption("Historial reciente")
-
-    with st.container(height=430, border=False):
-        for message in history_messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
+                st.error(error_message)
+                st.exception(exc)
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
