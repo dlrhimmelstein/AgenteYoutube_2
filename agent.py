@@ -80,30 +80,35 @@ def get_bigquery_client() -> bigquery.Client:
 
     return bigquery.Client(project=PROJECT_ID)
 
+
 def _get_all_api_keys() -> list[str]:
     """Recopila todas las API keys disponibles en orden de prioridad."""
     keys = []
-    
-    # Keys numeradas: GOOGLE_API_KEY_1, GOOGLE_API_KEY_2, ...
+
     for i in range(1, 6):
         key = _secret_or_env(f"GOOGLE_API_KEY_{i}")
         if key and key not in keys:
             keys.append(key)
-    
-    # Key principal sin número (compatibilidad con lo que ya tienes)
+
     main_key = _secret_or_env("GOOGLE_API_KEY")
     if main_key and main_key not in keys:
         keys.append(main_key)
-    
+
     return keys
 
 
-@st.cache_resource(show_spinner=False)
-# Ya no se cachea como recurso único — ahora es solo un helper
+# SIN @st.cache_resource — recibe api_key como parámetro
 def get_gemini_client(api_key: Optional[str] = None) -> genai.Client:
-    key = api_key or _secret_or_env("GOOGLE_API_KEY")
+    key = api_key
     if not key:
-        raise ValueError("No se encontro ninguna GOOGLE_API_KEY disponible.")
+        # Si no viene key explícita, toma la primera disponible
+        available = _get_all_api_keys()
+        key = available[0] if available else None
+    if not key:
+        raise ValueError(
+            "No se encontro ninguna GOOGLE_API_KEY disponible. "
+            "Agrega GOOGLE_API_KEY o GOOGLE_API_KEY_1 ... GOOGLE_API_KEY_5 en Secrets."
+        )
     return genai.Client(api_key=key)
 
 
@@ -119,7 +124,6 @@ def get_api_keys() -> list[str]:
     return keys
 
 
-# Estado de keys agotadas en sesión para no reintentar las que ya fallaron
 def _get_exhausted_keys() -> set[str]:
     if "exhausted_api_keys" not in st.session_state:
         st.session_state["exhausted_api_keys"] = set()
@@ -139,21 +143,19 @@ def get_available_keys() -> list[str]:
     all_keys = get_api_keys()
     exhausted = _get_exhausted_keys()
     available = [k for k in all_keys if k not in exhausted]
-    
-    # Si todas están agotadas, resetea y vuelve a intentar con todas
-    # (los límites de cuota se recuperan con el tiempo)
+
     if not available:
         _reset_exhausted_keys()
         available = all_keys
-    
+
     return available
+
 
 @st.cache_resource(show_spinner=False)
 def get_sentence_transformer_model(model_name: str):
     from sentence_transformers import SentenceTransformer
 
     return SentenceTransformer(model_name)
-
 
 # =========================
 # 3. UTILIDADES
