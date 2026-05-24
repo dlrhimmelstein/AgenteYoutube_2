@@ -52,7 +52,7 @@ GEMINI_MODEL = _secret_or_env("GEMINI_MODEL", ""gemini-2.5-flash"")
 GEMINI_CLASSIFIER_MODEL = _secret_or_env("GEMINI_CLASSIFIER_MODEL", "gemini-2.5-flash-lite")
 GEMINI_RERANK_MODEL = _secret_or_env("GEMINI_RERANK_MODEL", GEMINI_MODEL)
 GEMINI_FINAL_MODEL = _secret_or_env("GEMINI_FINAL_MODEL", GEMINI_MODEL)
-GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", ""gemini-2.5-flash"")
+GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
 GEMINI_EMBEDDING_MODEL = _secret_or_env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 LOCAL_EMBEDDING_MODEL = _secret_or_env("LOCAL_EMBEDDING_MODEL", "")
 
