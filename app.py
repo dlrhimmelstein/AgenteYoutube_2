@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 
 import os
-import pandas as pd
+
 import streamlit as st
-import plotly.express as px
-import plotly.graph_objects as go
-from google.cloud import bigquery
 
 
 # =========================
@@ -59,6 +56,7 @@ if not has_gcp_secret and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
 
 try:
     from agent import (
+        AGENT_BUILD_ID,
         CHANNEL_ID,
         DATASET_ID,
         PROJECT_ID,
@@ -71,6 +69,8 @@ except Exception as exc:
     st.error("Error al importar el agente desde agent.py.")
     st.exception(exc)
     st.stop()
+
+AGENT_BUILD_ID = globals().get("AGENT_BUILD_ID", "sin build id")
 
 
 # =========================
@@ -101,131 +101,6 @@ def format_compact_number(value):
         return f"{value / 1_000:.1f}K"
     return f"{int(value):,}"
 
-# =========================
-# FUNCIONES DE GRÁFICAS
-# =========================
-
-
-#Grafica de evolución de suscriptores, con validaciones para evitar errores por datos faltantes o nulos.
-@st.cache_data(ttl=600)
-def plot_subscriber_growth():
-    """Gráfica de líneas: evolución de suscriptores"""
-    try:
-        # 1. Verificar la existencia de la columna 'suscriptores_canal'
-        check_column_query = f"""
-        SELECT column_name
-        FROM `{PROJECT_ID}.{DATASET_ID}.INFORMATION_SCHEMA.COLUMNS`
-        WHERE table_name = 'fact_metricas_variables'
-          AND column_name = 'suscriptores_canal'
-        """
-        col_result = retriever.client.query(check_column_query).result()
-        if not any(col_result):
-            st.warning("La columna 'suscriptores_canal' no existe en la tabla.")
-            return None
-
-        # 2. Consulta los datos de suscriptores
-        query = f"""
-        SELECT fecha_publicacion, suscriptores_canal
-        FROM `{PROJECT_ID}.{DATASET_ID}.fact_metricas_variables`
-        WHERE suscriptores_canal IS NOT NULL
-          AND fecha_publicacion IS NOT NULL
-        ORDER BY fecha_publicacion ASC
-        """
-        result = retriever.client.query(query).result()
-        rows = [dict(row) for row in result]
-
-        if not rows:
-            st.info("No hay datos históricos de suscriptores para mostrar evolución.")
-            return None
-
-        # 3. Crear DataFrame y validar
-        df = pd.DataFrame(rows)
-        df['fecha_publicacion'] = pd.to_datetime(df['fecha_publicacion'])
-        df = df.sort_values('fecha_publicacion')
-
-        if df.empty:
-            st.info("No hay datos suficientes para generar la gráfica de suscriptores.")
-            return None
-
-        # 4. Crear la gráfica de líneas con Plotly
-        import plotly.express as px
-        fig = px.line(
-            df, x='fecha_publicacion', y='suscriptores_canal',
-            title='Evolución de suscriptores',
-            labels={'fecha_publicacion': 'Fecha', 'suscriptores_canal': 'Suscriptores'}
-        )
-        fig.update_layout(
-            plot_bgcolor='#1e1e1e',
-            paper_bgcolor='#1e1e1e',
-            font_color='#ffffff',
-            title_font_color='#ffffff'
-        )
-        return fig
-
-    except Exception as e:
-        st.error(f"Error al generar la gráfica de suscriptores: {e}")
-        return None
-
-@st.cache_data(ttl=600)
-def plot_views_by_topic():
-    """Gráfica de barras horizontales: vistas totales por tema (Plotly)"""
-    try:
-        topics = retriever.topic_performance(limit=8, order_by="views")
-        if not topics:
-            return None
-        df = pd.DataFrame(topics)
-        import plotly.express as px
-        fig = px.bar(
-            df,
-            x='views_totales',
-            y='tema_legible',
-            orientation='h',
-            title="📊 Vistas totales por tema",
-            labels={'views_totales': 'Vistas', 'tema_legible': 'Tema'},
-            color='views_totales',
-            color_continuous_scale='Reds'
-        )
-        fig.update_layout(
-            plot_bgcolor='#1e1e1e',
-            paper_bgcolor='#1e1e1e',
-            font_color='white',
-            title_font_color='white'
-        )
-        return fig
-    except Exception as e:
-        st.error(f"Error en gráfica de vistas por tema: {e}")
-        return None
-
-@st.cache_data(ttl=600)
-def plot_engagement_by_topic():
-    """Gráfica de barras horizontales: engagement promedio por tema (Plotly)"""
-    try:
-        topics = retriever.topic_performance(limit=8, order_by="engagement")
-        if not topics:
-            return None
-        df = pd.DataFrame(topics)
-        import plotly.express as px
-        fig = px.bar(
-            df,
-            x='engagement_promedio',
-            y='tema_legible',
-            orientation='h',
-            title="🔥 Engagement por tema",
-            labels={'engagement_promedio': 'Engagement (%)', 'tema_legible': 'Tema'},
-            color='engagement_promedio',
-            color_continuous_scale='Reds'
-        )
-        fig.update_layout(
-            plot_bgcolor='#1e1e1e',
-            paper_bgcolor='#1e1e1e',
-            font_color='white',
-            title_font_color='white'
-        )
-        return fig
-    except Exception as e:
-        st.error(f"Error en gráfica de engagement por tema: {e}")
-        return None
-
 
 @st.cache_data(show_spinner=False, ttl=900)
 def load_sidebar_stats():
@@ -251,666 +126,683 @@ def load_sidebar_stats():
 metrics, segment_stats = load_sidebar_stats()
 
 
-
-@st.cache_data(ttl=600)
-def plot_views_by_weekday():
-    """Gráfica de barras: vistas promedio por día de la semana (timestamp string)"""
-    try:
-        query = f"""
-        SELECT 
-            FORMAT_TIMESTAMP('%A', SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion)) as dia_semana,
-            AVG(views) as avg_views,
-            COUNT(*) as num_videos
-        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
-        WHERE channel_id = '{CHANNEL_ID}'
-          AND fecha_publicacion IS NOT NULL
-          AND SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) IS NOT NULL
-        GROUP BY dia_semana
-        ORDER BY 
-            CASE dia_semana
-                WHEN 'Monday' THEN 1
-                WHEN 'Tuesday' THEN 2
-                WHEN 'Wednesday' THEN 3
-                WHEN 'Thursday' THEN 4
-                WHEN 'Friday' THEN 5
-                WHEN 'Saturday' THEN 6
-                WHEN 'Sunday' THEN 7
-            END
-        """
-        result = retriever.client.query(query).result()
-        rows = [dict(row) for row in result]
-        if not rows:
-            st.info("No hay datos suficientes para mostrar vistas por día.")
-            return None
-        
-        df = pd.DataFrame(rows)
-        # Traducir días al español
-        dias_es = {
-            'Monday': 'Lunes', 'Tuesday': 'Martes', 'Wednesday': 'Miércoles',
-            'Thursday': 'Jueves', 'Friday': 'Viernes', 'Saturday': 'Sábado', 'Sunday': 'Domingo'
-        }
-        df['dia_semana'] = df['dia_semana'].map(dias_es).fillna(df['dia_semana'])
-        
-        import plotly.express as px
-        fig = px.bar(
-            df,
-            x='dia_semana',
-            y='avg_views',
-            title="📅 Vistas promedio por día de publicación",
-            labels={'dia_semana': 'Día', 'avg_views': 'Vistas promedio'},
-            color='avg_views',
-            color_continuous_scale='Reds',
-            text='num_videos'
-        )
-        fig.update_traces(textposition='outside')
-        fig.update_layout(
-            plot_bgcolor='#1e1e1e',
-            paper_bgcolor='#1e1e1e',
-            font_color='white',
-            title_font_color='white',
-            xaxis=dict(tickangle=0)
-        )
-        return fig
-    except Exception as e:
-        st.error(f"Error en gráfica de vistas por día: {e}")
-        return None
-
 # =========================
-# 5. ESTILOS GENERALES DE LA APP
+# 5. ESTILOS
 # =========================
 
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
-
-    body, .stApp {
-        background-color: #0f0f0f;  /* Fondo oscuro principal */
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        color: #f0f0f0;
-    }
-
-    /* Ocultar elementos nativos de Streamlit */
-    header, footer, #MainMenu {
-        display: none !important;
+    .stApp {
+        background: #f7f7f7;
+        color: #111827;
     }
 
     .block-container {
-        padding: 1.5rem 2rem 6rem 2rem;
-        max-width: 1400px;
-        margin: 0 auto;
+        padding-top: 0rem;
+        padding-bottom: 5rem;
+        padding-left: 1.4rem;
+        padding-right: 1.4rem;
+        max-width: 100%;
     }
 
-    /* Tarjetas oscuras */
-    .card, .metric-card, .video-card, .topic-card {
-        background-color: #1e1e1e;
-        border-radius: 20px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.5);
-        transition: all 0.2s ease;
-        border: 1px solid #2c2c2c;
-    }
-    .card:hover, .video-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 12px 24px rgba(0,0,0,0.6);
-        border-color: #e63946;
-    }
-    .metric-card {
-        padding: 1.2rem 1rem;
-        text-align: center;
-    }
-    .metric-value {
-        font-size: 2.1rem;
-        font-weight: 800;
-        color: #ffffff;
-    }
-    .metric-label {
-        font-size: 0.7rem;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        color: #a0a0a0;
-    }
-    .metric-change {
-        color: #10b981;
-        font-size: 0.7rem;
-        margin-top: 0.3rem;
+    html, body, [class*="css"] {
+        font-family: Inter, "Segoe UI", sans-serif;
     }
 
-    /* Header */
-    .dashboard-header {
+    header, footer, #MainMenu {
+        display: none !important;
+        visibility: hidden;
+    }
+
+    .yt-header-wrapper {
+        width: 100%;
+        min-height: 60px;
+        background: #ffffff;
+        border-bottom: 1px solid #e5e7eb;
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        margin-bottom: 2rem;
-        flex-wrap: wrap;
+        justify-content: space-between;
+        padding: 0 1.2rem;
+        margin: 0rem -1.4rem 1rem -1.4rem;
+        box-sizing: border-box;
     }
-    .logo-area {
+
+    .yt-header-left {
         display: flex;
         align-items: center;
         gap: 0.8rem;
     }
-    .logo-icon {
-        background: #e63946;
-        width: 44px;
-        height: 44px;
-        border-radius: 14px;
-        display: inline-flex;
+
+    .yt-logo, .sidebar-logo, .empty-logo {
+        background: #ff0000;
+        color: white;
+        display: flex;
         align-items: center;
         justify-content: center;
-        color: white;
-        font-size: 1.6rem;
-        box-shadow: 0 4px 12px rgba(230,57,70,0.4);
-    }
-    .logo-text h1 {
-        font-size: 1.5rem;
-        font-weight: 800;
-        color: #ffffff;
-        letter-spacing: -0.3px;
-    }
-    .logo-text p {
-        font-size: 0.7rem;
-        color: #a0a0a0;
-    }
-    .badge {
-        background: #2c2c2c;
-        padding: 0.4rem 1rem;
-        border-radius: 40px;
-        font-size: 0.75rem;
-        color: #e63946;
-        font-weight: 700;
-        border: 1px solid #3a3a3a;
+        font-weight: 900;
+        letter-spacing: 0;
     }
 
-    /* Grid de videos */
-    .videos-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: 1.2rem;
-        margin-top: 1rem;
+    .yt-logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        font-size: 0.8rem;
     }
-   .video-card {
-    background-color: #1e1e1e;
-    border-radius: 16px;
-    overflow: hidden;
-    transition: transform 0.2s, box-shadow 0.2s;
-    border: 1px solid #2c2c2c;
-    cursor: pointer;
+
+    .yt-title {
+        color: #0f0f0f;
+        font-size: 1rem;
+        font-weight: 850;
+        line-height: 1.1;
     }
-    .video-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 12px 20px rgba(0,0,0,0.4);
-        border-color: #e63946;
+
+    .yt-subtitle {
+        color: #6b7280;
+        font-size: 0.75rem;
+        margin-top: 2px;
     }
-    .video-thumb {
-        width: 100%;
-        aspect-ratio: 16/9;
-        object-fit: cover;
-        background: #2a2a2a;
+
+    .yt-header-right {
+        display: flex;
+        gap: 0.55rem;
+        align-items: center;
+        flex-wrap: wrap;
     }
-    .video-info {
-        padding: 0.8rem;
+
+    .yt-pill {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 999px;
+        padding: 0.35rem 0.8rem;
+        font-size: 0.76rem;
+        font-weight: 650;
+        color: #4b5563;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+        white-space: nowrap;
     }
-    .video-title {
-        font-weight: 700;
-        font-size: 0.85rem;
-        color: #f0f0f0;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-        line-height: 1.3;
-        margin-bottom: 0.3rem;
+
+    .welcome-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 1rem 1.15rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
-    .video-stats {
-        font-size: 0.7rem;
-        color: #a0a0a0;
+
+    .panel-title {
+        color: #111827;
+        font-size: 0.92rem;
+        font-weight: 850;
+        margin-bottom: 0.35rem;
+    }
+
+    .panel-subtitle {
+        color: #6b7280;
+        font-size: 0.78rem;
+        line-height: 1.45;
+        margin-bottom: 0.8rem;
+    }
+
+    .helper-stat {
         display: flex;
         justify-content: space-between;
+        gap: 0.8rem;
+        padding: 0.55rem 0;
+        border-top: 1px solid #f0f0f0;
+        color: #4b5563;
+        font-size: 0.78rem;
     }
 
-    /* Gráfico (matplotlib) - se ajustará con estilo propio */
-    .chart-container {
-        background: #1e1e1e;
-        border-radius: 20px;
-        padding: 1rem;
-        margin: 1rem 0;
-        border: 1px solid #2c2c2c;
+    .helper-stat b {
+        color: #111827;
     }
 
-    /* Tendencias */
-    .topic-grid {
+    .chat-history-note {
+        color: #6b7280;
+        font-size: 0.75rem;
+        margin: 0.7rem 0 0.4rem;
+    }
+
+    .welcome-top {
         display: flex;
+        align-items: flex-start;
         gap: 1rem;
-        flex-wrap: wrap;
-        margin: 1rem 0;
     }
-    .topic-card {
-        flex: 1;
-        padding: 0.8rem;
+
+    .welcome-icon {
+        width: 42px;
+        height: 42px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #ff0033, #ff4d6d);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.85rem;
+        font-weight: 900;
+        flex-shrink: 0;
+    }
+
+    .welcome-title {
+        font-size: 1rem;
+        font-weight: 850;
+        color: #0f0f0f;
+        margin-bottom: 0.25rem;
+    }
+
+    .welcome-subtitle {
+        font-size: 0.84rem;
+        line-height: 1.5;
+        color: #6b7280;
+    }
+
+    .welcome-tags-text {
+        margin-top: 1rem;
+        color: #374151;
+        font-size: 0.78rem;
+        font-weight: 650;
+    }
+
+    [data-testid="stSidebar"] {
+        background-color: #f2f2f2;
+    }
+
+    [data-testid="stSidebar"] > div:first-child {
+        padding-top: 0.45rem !important;
+    }
+
+    .sidebar-title {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-bottom: 0.8rem;
+    }
+
+    .sidebar-logo {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        font-size: 0.7rem;
+    }
+
+    .sidebar-main-title {
+        font-size: 0.9rem;
+        font-weight: 850;
+        color: #0f0f0f;
+    }
+
+    .sidebar-subtitle {
+        font-size: 0.67rem;
+        color: #8a8a8a;
+    }
+
+    .sidebar-section-title {
+        font-size: 0.64rem;
+        font-weight: 850;
+        color: #9ca3af;
+        letter-spacing: 0.08rem;
+        margin: 0.48rem 0 0.32rem 0;
+    }
+
+    .sidebar-item {
+        background: transparent;
+        border-radius: 10px;
+        padding: 0.34rem 0.38rem;
+        margin-bottom: 0.04rem;
+        color: #0f0f0f;
+        font-size: 0.74rem;
+        display: grid;
+        grid-template-columns: 24px 1fr;
+        column-gap: 0.35rem;
+        align-items: center;
+    }
+
+    .sidebar-item:hover {
+        background: #e5e5e5;
+    }
+
+    .sidebar-item span {
+        font-weight: 750;
+    }
+
+    .sidebar-item small {
+        grid-column: 2;
+        color: #8a8a8a;
+        font-size: 0.63rem;
+        margin-top: -0.08rem;
+    }
+
+    .sidebar-divider {
+        height: 1px;
+        background: #dddddd;
+        margin: 0.55rem 0;
+    }
+
+    .channel-status-card {
+        border-top: 1px solid #dddddd;
+        padding-top: 0.55rem;
+        margin-top: 0.35rem;
+    }
+
+    .channel-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.72rem;
+        margin-bottom: 0.28rem;
+        gap: 0.8rem;
+    }
+
+    .channel-row span {
+        color: #8a8a8a;
+        font-weight: 520;
+    }
+
+    .channel-row b {
+        color: #0f0f0f;
+        font-weight: 780;
+        text-align: right;
+    }
+
+    .agent-active {
+        color: #e60023 !important;
+    }
+
+    .connection-info {
+        margin-top: 0.8rem;
+        color: #0f0f0f;
+        font-size: 0.82rem;
+    }
+
+    .connection-info code {
+        background: #111827;
+        color: #22c55e;
+        padding: 0.15rem 0.35rem;
+        border-radius: 6px;
+    }
+
+    .stButton > button {
+        border-radius: 999px;
+        border: 1px solid #d1d5db;
+        background-color: #ffffff;
+        color: #374151;
+        font-weight: 700;
+        min-height: 32px;
+        padding-top: 0.25rem;
+        padding-bottom: 0.25rem;
+        font-size: 0.78rem;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        transition: all 0.2s ease;
+    }
+
+    .stButton > button:hover {
+        background-color: #f1f1f1;
+        border-color: #c7c7c7;
+        color: #0f0f0f;
+        transform: translateY(-1px);
+    }
+
+    .empty-logo, .empty-title, .empty-text {
+        max-width: 560px;
+        margin-left: auto;
+        margin-right: auto;
         text-align: center;
     }
 
-    /* Chat - fondos oscuros */
-    .stChatInput input {
-        background-color: #2c2c2c !important;
-        border: 1px solid #3a3a3a !important;
-        color: #ffffff !important;
-        border-radius: 40px !important;
-        padding: 0.6rem 1rem !important;
+    .empty-logo {
+        width: 64px;
+        height: 48px;
+        margin-top: 4rem;
+        margin-bottom: 1.2rem;
+        border-radius: 16px;
+        font-size: 0.9rem;
+        box-shadow: 0 8px 20px rgba(255,0,0,0.25);
     }
-    .stChatInput input::placeholder {
-        color: #a0a0a0 !important;
+
+    .empty-title {
+        font-size: 1.35rem;
+        font-weight: 850;
+        color: #111827;
+        margin-bottom: 0.8rem;
     }
-    .stChatInput button {
-        background-color: #e63946 !important;
-        border-radius: 40px !important;
+
+    .empty-text {
+        font-size: 0.95rem;
+        line-height: 1.6;
+        color: #4b5563;
+    }
+
+    [data-testid="stChatMessage"] {
+        background: transparent !important;
+        padding: 0 !important;
+    }
+
+    [data-testid="stChatMessageContent"] {
+        background: white;
+        color: #0f0f0f;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 0.75rem 0.9rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        margin-bottom: 0.55rem;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    .thinking-box {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 0.9rem 1rem;
+        width: fit-content;
+        color: #4b5563;
+        font-size: 0.9rem;
+    }
+
+    .thinking-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        background: #ff0000;
+        animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+        0% { opacity: 0.4; transform: scale(0.9); }
+        50% { opacity: 1; transform: scale(1.1); }
+        100% { opacity: 0.4; transform: scale(0.9); }
+    }
+
+    [data-testid="stBottom"] {
+        background: #f1f3f4 !important;
+        border-top: 1px solid #e5e7eb !important;
+        padding: 0.8rem 2rem !important;
+    }
+
+    [data-testid="stBottom"] > div {
+        max-width: 1180px !important;
+        margin: 0 auto !important;
+    }
+
+    [data-baseweb="textarea"] {
+        border-radius: 999px !important;
+        border: 1px solid #d1d5db !important;
+        background: #ffffff !important;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
+    }
+
+    [data-baseweb="textarea"] textarea {
+        background: #ffffff !important;
+        color: #111827 !important;
+        font-size: 0.95rem !important;
+        padding-top: 0.95rem !important;
+        padding-left: 1.2rem !important;
+    }
+
+    [data-baseweb="textarea"] textarea::placeholder {
+        color: #9ca3af !important;
+        opacity: 1 !important;
+    }
+
+    [data-testid="stChatInput"] button {
+        background: #ff0000 !important;
         color: white !important;
-        font-weight: 600 !important;
+        border-radius: 999px !important;
         border: none !important;
     }
-    .stChatInput button:hover {
-        background-color: #c1121f !important;
-    }
 
-    /* Mensajes del chat */
-    [data-testid="stChatMessageContent"] {
-        background-color: #1e1e1e !important;
-        color: #f0f0f0 !important;
-        border: 1px solid #2c2c2c !important;
-    }
-    .topic-card-full {
-    background: #1e1e1e;
-    border-radius: 16px;
-    padding: 0.8rem 1rem;
-    margin-bottom: 1rem;
-    border: 1px solid #2c2c2c;
-    word-wrap: break-word;
-    white-space: normal;
-    }
-    .stButton button {
-    background-color: #e63946 !important;
-    color: white !important;
-    border: none !important;
-    }
-    .stButton button:hover {
-        background-color: #c1121f !important;
-    }
-
-    /* Estilo para el label del selectbox */
-    div[data-testid="stSelectbox"] label {
-        color: #ffffff !important;
-        font-size: 0.9rem !important;
-        font-weight: 600 !important;
-        font-family: 'Inter', sans-serif !important;
-    }
-
-    /* Estilo para el selectbox en sí (el recuadro) */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] {
-        background-color: #f0f0f0 !important;
-        border-color: #e63946 !important;
-        border-radius: 8px !important;
-    }
-
-
-    /* Estilo para el ícono de dropdown */
-    div[data-testid="stSelectbox"] svg {
-        fill: #e63946 !important;
-    }
-
-
-    /* Estilo para el menú desplegable (las opciones) */
-    div[data-testid="stSelectbox"] ul {
-        background-color: #1e1e1e !important;
-        border: 1px solid #e63946 !important;
-    }
-
-    /* Estilo para cada opción individual */
-    div[data-testid="stSelectbox"] ul li {
-        color: #ffffff !important;
-        background-color: #1e1e1e !important;
-        font-size: 0.8rem !important;
-    }
-
-    /* Estilo cuando pasas el mouse sobre una opción */
-    div[data-testid="stSelectbox"] ul li:hover {
-        background-color: #e63946 !important;
-        color: #ffffff !important;
-    }
-
-    /* Estilo para el ícono de flecha */
-    div[data-testid="stSelectbox"] svg {
-    fill: #e63946 !important;
-    }
-
-    /* Estilo para el texto dentro del selectbox */
-    div[data-testid="stSelectbox"] div[data-baseweb="select"] div {
-        color: #000000 !important;        /* Cambiado a negro */
-        font-size: 0.85rem !important;
-        font-weight: bold !important;     /* Añadido negritas */
-    }
-
-    /* Hacer visible el texto del selectbox cuando está cerrado */
-    .stSelectbox [data-baseweb="select"] div:first-child {
-        color: #000000 !important;        /* Cambiado a negro */
-        font-weight: bold !important;     /* Añadido negritas */
-    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Crear dos columnas: izquierda (2/3 del ancho) y derecha (1/3)
-col_izq, col_der = st.columns([2.2, 1], gap="large")
 
-with col_izq:
+# =========================
+# 6. HEADER
+# =========================
 
-    # =========================
-    # 6. HEADER
-    # =========================
+videos_count = segment_stats.get("videos") or metrics.get("videos") or 0
 
-    from google.cloud import bigquery
-
-    @st.cache_data(ttl=600)
-    def get_dashboard_data():
-        try:
-            top_videos = retriever.ranked_videos(order_by="views", limit=6)
-            channel_profile = retriever.channel_profile() or {}
-            analytics = retriever.analytics_summary() or {}
-            topics = retriever.topic_performance(limit=5, order_by="engagement")
-            subs_df = []
-            # ... (código para subs_df) ...
-            return top_videos, channel_profile, analytics, topics, subs_df
-        except Exception as e:
-            st.error(f"Error cargando datos: {e}")
-            return [], {}, {}, [], [] 
-
-    # Cargar datos
-    top_videos, channel_profile, analytics, topics, subs_df = get_dashboard_data()
-
-
-
-    st.markdown(f"""
-    <div class="dashboard-header">
-        <div class="logo-area">
-            <div class="logo-icon">▶</div>
-            <div class="logo-text">
-                <h1>INFLUENCER INSIGHTS LAB</h1>
-                <p>YouTube Analytics · Gemini AI · BigQuery</p>
+st.markdown(
+    f"""
+    <div class="yt-header-wrapper">
+        <div class="yt-header-left">
+            <div class="yt-logo">PLAY</div>
+            <div>
+                <div class="yt-title">Las Damitas Histeria</div>
+                <div class="yt-subtitle">Agente de analisis · Gemini + BigQuery</div>
             </div>
         </div>
-        <div class="badge">Pro Analyst</div>
+        <div class="yt-header-right">
+            <div class="yt-pill">Gemini conectado</div>
+            <div class="yt-pill">{format_compact_number(videos_count)} videos</div>
+            <div class="yt-pill">{format_compact_number(segment_stats.get("segmentos"))} segmentos</div>
+        </div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-    # --- Video destacado y métricas ---
-    if top_videos:
-        featured = top_videos[0]
-        video_url = featured.get("url_video", "")
-        video_id = video_url.split("v=")[-1].split("&")[0] if "v=" in video_url else ""
-        
-        col1, col2 = st.columns([1.6, 1])
-        with col1:
-            if video_id:
-                st.markdown(f"""
-                <div class="card">
-                    <iframe width="100%" height="315" src="https://www.youtube.com/embed/{video_id}" 
-                    frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                    allowfullscreen></iframe>
-                    <div style="margin-top: 0.8rem;">
-                        <strong>{featured.get('titulo_video', 'Top video')}</strong><br>
-                        <span style="font-size:0.8rem; color:#606060;">{featured.get('views', 0):,} vistas · {featured.get('engagement', 0):.1%} engagement</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.info("Video destacado no disponible (falta URL)")
-        with col2:
-            st.markdown('<div class="metrics-grid">', unsafe_allow_html=True)
-            metrics_data = [
-                ("Engagement", f"{analytics.get('engagement_promedio', 0):.1f}%", "+2.1%"),
-                ("Watch Time", f"{featured.get('views', 0) * (featured.get('duracion_minutos', 10) / 60):,.0f} hrs", "+14%"),            
-                ("Views", f"{analytics.get('views', 0):,.0f}", "+8.5%"),
-                ("Subscribers Gained", f"+{channel_profile.get('suscriptores_canal', 0)-100000:,}", "+38%")
-            ]
-            for label, value, change in metrics_data:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-value">{value}</div>
-                    <div class="metric-label">{label}</div>
-                    <div class="metric-change">▲ {change}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.warning("No hay videos para mostrar. Verifica la conexión con BigQuery.")
 
-    
+# =========================
+# 7. SIDEBAR
+# =========================
 
-    # --- Top videos de crecimiento ---
-    if top_videos:
-        st.markdown("## 🚀 Top Videos de Crecimiento")
-        cols = st.columns(3)
-        for idx, video in enumerate(top_videos[:6]):
-            with cols[idx % 3]:
-                titulo = video.get('titulo_video', 'Sin título')
-                views = video.get('views', 0)
-                likes = video.get('likes', 0)
-                engagement = video.get('engagement', 0)
-                url_video = video.get('url_video', '')
-                
-                # Extraer video_id de la URL de YouTube
-                video_id = None
-                if url_video:
-                    if 'v=' in url_video:
-                        video_id = url_video.split('v=')[1].split('&')[0]
-                    elif 'youtu.be/' in url_video:
-                        video_id = url_video.split('youtu.be/')[1].split('?')[0]
-                
-                # Generar miniatura desde YouTube (calidad media)
-                if video_id:
-                    thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-                else:
-                    thumb_url = "https://placehold.co/320x180/1e1e1e/e63946?text=Preview+No+Disponible"
-                
-                # Tarjeta cliqueable
-                st.markdown(f"""
-                <a href="{url_video}" target="_blank" style="text-decoration: none;">
-                    <div class="video-card">
-                        <img class="video-thumb" src="{thumb_url}" loading="lazy"
-                            onerror="this.src='https://placehold.co/320x180/1e1e1e/e63946?text=Error+Cargar'">
-                        <div class="video-info">
-                            <div class="video-title">{titulo}</div>
-                            <div class="video-stats">
-                                <span>👁 {views:,}</span>
-                                <span>❤️ {likes:,}</span>
-                                <span>📈 {engagement:.1%}</span>
-                            </div>
-                        </div>
-                    </div>
-                </a>
-                """, unsafe_allow_html=True)
-
-    # --- Tendencias de contenido ---
-    if topics:
-        st.markdown("## 📊 Tendencias de Contenido")
-        # Usamos 2 columnas en lugar de 4 para que quepa mejor el texto completo
-        topic_cols = st.columns(2)
-        for i, topic in enumerate(topics[:4]):
-            with topic_cols[i % 2]:
-                # HTML personalizado sin truncamiento
-                st.markdown(f"""
-                <div class="topic-card-full">
-                    <div style="font-weight: 700; color: #e63946; margin-bottom: 4px;">{topic.get('tema_legible', 'Tema')}</div>
-                    <div style="font-size: 1.2rem; font-weight: 800;">{topic.get('engagement_promedio', 0):.1f}% <span style="font-size: 0.8rem;">engagement</span></div>
-                    <div style="color: #10b981; font-size: 0.8rem;">▲ {topic.get('videos', 0)} videos</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    # --- SECCIÓN DE GRÁFICAS INTERACTIVAS ---
-  
-    st.markdown("## 📊 Análisis Visual Avanzado")
-
-    tipo_grafica = st.selectbox(
-        "Selecciona la métrica a visualizar:",
-        ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día"),
-        key="selector_graficas"
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="sidebar-title">
+            <span class="sidebar-logo">YT</span>
+            <div>
+                <div class="sidebar-main-title">Las Damitas Histeria</div>
+                <div class="sidebar-subtitle">Agente YouTube Analytics</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    if tipo_grafica == "Vistas por tema":
-        fig = plot_views_by_topic()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar vistas por tema.")
-    elif tipo_grafica == "Engagement por tema":
-        fig = plot_engagement_by_topic()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar engagement por tema.")
-    elif tipo_grafica == "Evolución de suscriptores":
-        fig = plot_subscriber_growth()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos históricos de suscriptores para mostrar evolución.")
-    elif tipo_grafica == "Vistas promedio por día":
-        fig = plot_views_by_weekday()
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos suficientes para mostrar vistas por día.")
-#Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
-with col_der:
-    
-    # =========================
-    # 9. MEMORIA
-    # =========================
+    st.markdown('<div class="sidebar-section-title">ACCESOS RAPIDOS</div>', unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="sidebar-item">TOP <span>Top videos</span><small>Ranking por vistas</small></div>
+        <div class="sidebar-item">DIA <span>Mejor dia para publicar</span><small>Views, likes y engagement</small></div>
+        <div class="sidebar-item">TEM <span>Temas exitosos</span><small>Por interaccion</small></div>
+        <div class="sidebar-item">RES <span>Resumen del canal</span><small>Metricas generales</small></div>
+        <div class="sidebar-item">BUS <span>Buscar por tema</span><small>En que episodio hablaron de X</small></div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    st.markdown('<div class="channel-status-card">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">CANAL AL DIA</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="channel-row"><span>Videos</span><b>{format_compact_number(metrics.get("videos") or videos_count)}</b></div>
+        <div class="channel-row"><span>Views</span><b>{format_compact_number(metrics.get("views"))}</b></div>
+        <div class="channel-row"><span>Likes</span><b>{format_compact_number(metrics.get("likes"))}</b></div>
+        <div class="channel-row"><span>Comentarios</span><b>{format_compact_number(metrics.get("comentarios"))}</b></div>
+        <div class="channel-row"><span>Segmentos</span><b>{format_compact_number(segment_stats.get("segmentos"))}</b></div>
+        <div class="channel-row"><span>Estado</span><b class="agent-active">Activo</b></div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    if not st.session_state.messages:
-        st.markdown(
-            """
-            <div class="empty-logo">
-                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" style="width:34px;height:34px;fill:white;">
-                    <path d="M19.59 7a2.5 2.5 0 0 0-1.76-1.76C16.46 5 12 5 12 5s-4.46 0-5.83.24A2.5 2.5 0 0 0 4.41 7 26 26 0 0 0 4.17 12a26 26 0 0 0 .24 5 2.5 2.5 0 0 0 1.76 1.76C7.54 19 12 19 12 19s4.46 0 5.83-.24A2.5 2.5 0 0 0 19.59 17 26 26 0 0 0 19.83 12a26 26 0 0 0-.24-5zM10 15v-6l5 3-5 3z"/>
-                </svg>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section-title">BIGQUERY</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="empty-title">Hola, soy tu agente de YouTube</div>', unsafe_allow_html=True)
+    if segment_stats.get("existe"):
+        st.success("Tabla de segmentos lista")
+        st.caption(f"Tabla: `{SEGMENTS_TABLE_ID}`")
+        if segment_stats.get("embedding_model"):
+            st.caption(f"Embedding model: {segment_stats['embedding_model']}")
+        st.caption(f"Actualizado: {segment_stats.get('actualizado')}")
+    else:
+        st.warning("Tabla de segmentos no encontrada")
+        st.caption(f"Esperada: `{SEGMENTS_TABLE_ID}`")
 
-        st.markdown(
-            """
-            <div class="empty-text">
-                Puedo analizar el rendimiento de <b>Las Damitas Histeria</b>, encontrar
-                en qué episodio hablaron de un tema y recomendarte decisiones con datos.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    # Botón para limpiar conversación
-    if st.button("🗑️ Limpiar conversación", key="clear_chat", use_container_width=True):
+    if st.button("Probar BigQuery", use_container_width=True):
+        with st.spinner("Verificando conexion con BigQuery..."):
+            try:
+                info = retriever.test_connection()
+                st.success("Conexion exitosa")
+                st.markdown(
+                    f"""
+                    <div class="connection-info">
+                        <p><b>Tabla:</b> <code>{info["tabla"]}</code></p>
+                        <p><b>Filas:</b> <code>{info["filas"]}</code></p>
+                        <p><b>Columnas:</b> <code>{info["columnas"]}</code></p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            except Exception as exc:
+                st.error("No se pudo conectar con BigQuery.")
+                st.exception(exc)
+
+    st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
+
+    if st.button("Limpiar conversacion", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-    # =========================
-    # 10. HISTORIAL
-    # =========================
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# =========================
+# 8. BIENVENIDA
+# =========================
+
+st.markdown(
+    """
+    <div class="welcome-card">
+        <div class="welcome-top">
+            <div class="welcome-icon">AI</div>
+            <div>
+                <div class="welcome-title">Que puede hacer este agente?</div>
+                <div class="welcome-subtitle">
+                    Consulta metricas, rendimiento, temas, transcripciones, recomendaciones,
+                    mejores dias para publicar y momentos aproximados dentro de episodios.
+                </div>
+            </div>
+        </div>
+        <div class="welcome-tags-text">
+            Analytics · Videos · Engagement · Transcripciones · Gemini AI · BigQuery
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-    # =========================
-    # 11. CHAT
-    # =========================
-    prompt = st.chat_input("Pregunta sobre el canal... ej: Que temas tuvieron mas engagement?")
+# =========================
+# 9. MEMORIA
+# =========================
 
-    # ── Capturar prompts de los botones del sidebar ──
-    if "prompt_sugerido" in st.session_state:
-        prompt = st.session_state.pop("prompt_sugerido")
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-    if prompt:
-        history_for_agent = st.session_state.messages[-8:]
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            thinking_placeholder = st.empty()
-            thinking_placeholder.markdown(
+
+# =========================
+# 10. CHAT
+# =========================
+
+prompt = st.chat_input("Pregunta sobre el canal... ej: Que temas tuvieron mas engagement?")
+
+if "prompt_sugerido" in st.session_state:
+    prompt = st.session_state.pop("prompt_sugerido")
+
+main_col, helper_col = st.columns([1.7, 0.75], gap="medium")
+
+with main_col:
+    with st.container(border=True):
+        st.markdown('<div class="panel-title">Conversacion con el agente</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="panel-subtitle">La respuesta nueva aparece arriba. El historial queda abajo con scroll para que las respuestas largas no empujen toda la pantalla.</div>',
+            unsafe_allow_html=True,
+        )
+
+        if prompt:
+            history_for_agent = st.session_state.messages[-8:]
+            st.session_state.messages.append({"role": "user", "content": prompt})
+
+            with st.container(height=320, border=True):
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    thinking_placeholder = st.empty()
+                    thinking_placeholder.markdown(
+                        """
+                        <div class="thinking-box">
+                            <div class="thinking-dot"></div>
+                            Analizando metricas y transcripciones...
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                    try:
+                        answer = agent.answer(prompt, history=history_for_agent)
+                        thinking_placeholder.empty()
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                    except Exception as exc:
+                        thinking_placeholder.empty()
+                        error_message = (
+                            "**Ocurrio un error al procesar tu pregunta.**\n\n"
+                            f"`{str(exc)}`\n\n"
+                            "Revisa Secrets, permisos de BigQuery y la tabla de segmentos."
+                        )
+                        st.error(error_message)
+                        st.exception(exc)
+                        st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+        if not st.session_state.messages:
+            st.markdown('<div class="empty-logo">PLAY</div>', unsafe_allow_html=True)
+            st.markdown('<div class="empty-title">Hola, soy tu agente de YouTube</div>', unsafe_allow_html=True)
+            st.markdown(
                 """
-                <div class="thinking-box">
-                    <div class="thinking-dot"></div>
-                    Analizando métricas y transcripciones...
+                <div class="empty-text">
+                    Puedo analizar el rendimiento de <b>Las Damitas Histeria</b>, encontrar
+                    en que episodio hablaron de un tema y recomendarte decisiones con datos.
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            try:
-                answer = agent.answer(prompt, history=history_for_agent)
-                thinking_placeholder.empty()
-                st.markdown(answer)
-        
-                # Detectar intención de gráfica
-                prompt_lower = prompt.lower()
-                mostrar_botones = False
-                tipo_grafica = None
-                
-                if any(p in prompt_lower for p in ["tema", "tópico", "categoría"]):
-                    if any(p in prompt_lower for p in ["vista", "views", "visualizac"]):
-                        mostrar_botones = True
-                        tipo_grafica = "topics_views"
-                    elif any(p in prompt_lower for p in ["engagement", "interacción"]):
-                        mostrar_botones = True
-                        tipo_grafica = "topics_engagement"
-                elif any(p in prompt_lower for p in ["evolución", "crecimiento", "suscriptor", "tiempo"]):
-                    mostrar_botones = True
-                    tipo_grafica = "suscriptores_line"
-                
-                if mostrar_botones:
-                    st.markdown("### 📊 Visualización de datos")
-                    col_b1, col_b2 = st.columns(2)
-                    with col_b1:
-                        if st.button("📊 Ver gráfica de barras", key="grafica_barras", use_container_width=True):
-                            if tipo_grafica == "topics_views":
-                                fig = generar_grafica_barras_topics('views', "Vistas totales por tema")
-                                if fig:
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("No hay datos suficientes para generar la gráfica.")
-                            elif tipo_grafica == "topics_engagement":
-                                fig = generar_grafica_barras_topics('engagement', "Engagement promedio por tema")
-                                if fig:
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("No hay datos suficientes para generar la gráfica.")
-                    with col_b2:
-                        if st.button("📈 Ver gráfica de líneas", key="grafica_lineas", use_container_width=True):
-                            if tipo_grafica == "suscriptores_line":
-                                fig = generar_grafica_lineas_suscriptores()
-                                if fig:
-                                    st.pyplot(fig)
-                                else:
-                                    st.info("No hay datos históricos de suscriptores para mostrar evolución.")
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-            except Exception as exc:
-                thinking_placeholder.empty()
-                error_message = (
-                    "**Ocurrió un error al procesar tu pregunta.**\n\n"
-                    f"`{str(exc)}`\n\n"
-                    "Revisa Secrets, permisos de BigQuery y la tabla de segmentos."
-                )
-                st.error(error_message)
-                st.exception(exc)
-                st.session_state.messages.append({"role": "assistant", "content": error_message})
+
+        st.markdown('<div class="chat-history-note">Historial reciente</div>', unsafe_allow_html=True)
+        history_messages = st.session_state.messages[:-2] if prompt else st.session_state.messages
+
+        with st.container(height=420, border=False):
+            if history_messages:
+                for message in history_messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+            else:
+                st.caption("Aqui se guardaran tus preguntas anteriores.")
+
+with helper_col:
+    with st.container(border=True):
+        st.markdown('<div class="panel-title">Panel rapido</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="panel-subtitle">Datos del canal y acceso para limpiar la conversacion sin ocupar espacio del chat.</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"""
+            <div class="helper-stat"><span>Videos</span><b>{format_compact_number(metrics.get("videos") or videos_count)}</b></div>
+            <div class="helper-stat"><span>Views</span><b>{format_compact_number(metrics.get("views"))}</b></div>
+            <div class="helper-stat"><span>Likes</span><b>{format_compact_number(metrics.get("likes"))}</b></div>
+            <div class="helper-stat"><span>Segmentos</span><b>{format_compact_number(segment_stats.get("segmentos"))}</b></div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Limpiar conversacion", key="clear_chat_main", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
