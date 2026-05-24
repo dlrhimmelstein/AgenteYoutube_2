@@ -9,6 +9,7 @@ import random
 import re
 import time
 import unicodedata
+mport requests
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -530,20 +531,44 @@ def detect_year(question: str) -> Optional[int]:
 
 def looks_like_metric_ranking_question(question: str) -> bool:
     q = normalize_text(question)
+
     if ("top" in q or "ranking" in q) and ("video" in q or "videos" in q):
         return True
 
     subject_markers = [
-        "que video", "cual video", "cuales videos", "que videos",
-        "video con", "videos con",
+        "que video",
+        "cual video",
+        "cuales videos",
+        "que videos",
+        "cuales son los videos",
+        "videos con",
+        "video con",
+        "videos que tienen",
+        "videos que tuvieron",
+        "videos que generaron",
+        "videos que consiguieron",
     ]
+
     metric_markers = [
-        "mas vistas", "mas views", "mayor views", "mayor numero de vistas",
-        "mas visto", "mas vistos", "mas likes", "mas me gusta",
-        "mas comentarios", "mayor engagement", "mejor engagement",
-        "mas engagement", "views por dia", "vistas por dia",
-        "views por minuto", "vistas por minuto",
+        "mas vistas",
+        "mas views",
+        "mayor views",
+        "mayor numero de vistas",
+        "mayor cantidad de vistas",
+        "mas visto",
+        "mas vistos",
+        "mas likes",
+        "mas me gusta",
+        "mas comentarios",
+        "mayor engagement",
+        "mejor engagement",
+        "mas engagement",
+        "views por dia",
+        "vistas por dia",
+        "views por minuto",
+        "vistas por minuto",
     ]
+
     return any(marker in q for marker in subject_markers) and any(
         marker in q for marker in metric_markers
     )
@@ -1271,64 +1296,179 @@ def model_chain(*model_names: Optional[str]) -> list[str]:
         seen.add(model_name)
         chain.append(model_name)
     return chain
+----------------------------------- OPENROUTER -----------------------------------
+def is_quota_error(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    return any(token in error_text for token in [
+        "429",
+        "resource_exhausted",
+        "quota",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+    ])
 
+
+def openrouter_generate(
+    prompt: str,
+    temperature: float = 0.2,
+    response_mime_type: Optional[str] = None,
+    model: Optional[str] = None,
+) -> str:
+    """
+    Fallback con OpenRouter cuando Gemini falla por cuota.
+
+    Usa el endpoint compatible con chat completions:
+    https://openrouter.ai/api/v1/chat/completions
+    """
+
+    api_key = _secret_or_env("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise ValueError("No se encontro OPENROUTER_API_KEY en Secrets ni variables de entorno.")
+
+    selected_model = model or _secret_or_env(
+        "OPENROUTER_MODEL",
+        "google/gemini-2.5-flash-lite"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    site_url = _secret_or_env("OPENROUTER_SITE_URL", "")
+    app_name = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
+
+    if site_url:
+        headers["HTTP-Referer"] = site_url
+    if app_name:
+        headers["X-Title"] = app_name
+
+    system_message = (
+        "Eres un asistente para analisis de YouTube. "
+        "Responde en espanol, claro, breve y usando solo el contexto dado."
+    )
+
+    user_content = prompt
+
+    # Si se espera JSON, reforzamos la instruccion.
+    if response_mime_type == "application/json":
+        user_content += "\n\nResponde SOLO JSON valido. No uses markdown."
+
+    payload = {
+        "model": selected_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_message,
+            },
+            {
+                "role": "user",
+                "content": user_content,
+            },
+        ],
+        "temperature": temperature,
+    }
+
+    response = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=60,
+    )
+
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"OpenRouter error {response.status_code}: {response.text[:500]}"
+        )
+
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"] or ""
+    except Exception:
+        raise RuntimeError(f"Respuesta inesperada de OpenRouter: {str(data)[:500]}")
 
 def gemini_generate(
     prompt: str,
     temperature: float = 0.2,
     response_mime_type: Optional[str] = None,
     models: Optional[list[str]] = None,
+    allow_openrouter_fallback: bool = True,
 ) -> str:
-    selected_models = models or model_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODEL)
+    """
+    Primero intenta con Gemini.
+    Si Gemini falla por cuota 429, usa OpenRouter como respaldo.
+    """
+
+    client = get_gemini_client()
     last_error: Optional[Exception] = None
+    selected_models = models or model_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODEL)
 
     for model_name in selected_models:
-        available_keys = get_available_keys()
+        for attempt in range(3):
+            try:
+                config_args = {"temperature": temperature}
 
-        for api_key in available_keys:
-            for attempt in range(3):
-                try:
-                    client = get_gemini_client(api_key=api_key)
-                    config_args: dict[str, Any] = {"temperature": temperature}
-                    if response_mime_type:
-                        config_args["response_mime_type"] = response_mime_type
+                if response_mime_type:
+                    config_args["response_mime_type"] = response_mime_type
 
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(**config_args),
-                    )
-                    return response.text or ""
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_args),
+                )
 
-                except Exception as exc:
-                    last_error = exc
-                    error_text = str(exc).lower()
+                return response.text or ""
 
-                    # Error de cuota o autenticación en esta key — pasa a la siguiente
-                    quota_error = any(token in error_text for token in [
-                        "429", "quota", "resource_exhausted", "rate",
-                    ])
-                    auth_error = any(token in error_text for token in [
-                        "401", "403", "api_key", "invalid", "permission",
-                    ])
+            except Exception as exc:
+                last_error = exc
+                error_text = str(exc).lower()
 
-                    if quota_error or auth_error:
-                        _mark_key_exhausted(api_key)
-                        break  # No reintentes con esta key, pasa a la siguiente
+                temporary = any(token in error_text for token in [
+                    "429",
+                    "503",
+                    "unavailable",
+                    "resource_exhausted",
+                    "quota",
+                    "rate",
+                    "temporar",
+                ])
 
-                    # Error temporal del servidor — reintenta con la misma key
-                    temporary = any(token in error_text for token in [
-                        "503", "unavailable", "temporar",
-                    ])
-                    if temporary:
-                        time.sleep(min(45, 2 ** attempt + random.uniform(0, 1.5)))
-                        continue
-
-                    # Error desconocido — no reintentar
+                if not temporary:
                     raise
+
+                # Si es cuota agotada, no conviene insistir mucho con Gemini.
+                # Mejor saltamos a OpenRouter si esta configurado.
+                if allow_openrouter_fallback and is_quota_error(exc):
+                    try:
+                        return openrouter_generate(
+                            prompt=prompt,
+                            temperature=temperature,
+                            response_mime_type=response_mime_type,
+                            model=OPENROUTER_MODEL,
+                        )
+                    except Exception as openrouter_exc:
+                        last_error = openrouter_exc
+                        break
+
+                time.sleep(min(45, 2 ** attempt + random.uniform(0, 1.5)))
+
+    # Ultimo intento con OpenRouter si Gemini fallo y todavia no se intento bien.
+    if allow_openrouter_fallback:
+        try:
+            return openrouter_generate(
+                prompt=prompt,
+                temperature=temperature,
+                response_mime_type=response_mime_type,
+                model=OPENROUTER_MODEL,
+            )
+        except Exception as openrouter_exc:
+            last_error = openrouter_exc
 
     if last_error:
         raise last_error
+
     return ""
 
 
@@ -1400,12 +1540,17 @@ def gemini_json(prompt: str) -> dict[str, Any]:
             temperature=0.1,
             response_mime_type="application/json",
             models=model_chain(GEMINI_CLASSIFIER_MODEL, GEMINI_MODEL, GEMINI_FALLBACK_MODEL),
+            allow_openrouter_fallback=True,
         ).strip()
+
         text = re.sub(r"^```(?:json)?", "", text).replace("```", "").strip()
+
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             text = match.group(0)
+
         return normalize_intent_plan(json.loads(text))
+
     except Exception:
         return default_intent_plan()
 
