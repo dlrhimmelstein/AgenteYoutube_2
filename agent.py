@@ -438,23 +438,36 @@ def looks_like_famous_opinion_question(question: str) -> bool:
 
 
 def detect_order_by(question: str, default: str = "views") -> str:
+    """
+    Traduce el lenguaje del usuario a una columna permitida para ordenar.
+    Esto evita mandar preguntas simples a Gemini.
+    """
     q = normalize_text(question)
+
     if "views por minuto" in q or "vistas por minuto" in q:
         return "views_por_minuto"
+    if "views por dia" in q or "vistas por dia" in q:
+        return "views_por_dia"
     if "engagement" in q or "interaccion" in q or "interacción" in q:
         return "engagement"
     if "likes" in q or "me gusta" in q:
         return "likes"
-    if "comentarios" in q:
+    if "comentarios" in q or "comments" in q:
         return "comentarios"
-    if "views por dia" in q or "vistas por dia" in q:
-        return "views_por_dia"
-    if "fecha" in q or "recientes" in q:
+    if "fecha" in q or "recientes" in q or "reciente" in q or "ultimos" in q or "ultimas" in q:
         return "fecha"
-    if "views" in q or "vistas" in q:
+    if (
+        "views" in q
+        or "vistas" in q
+        or "mas visto" in q
+        or "mas vistos" in q
+        or "mas vistas" in q
+        or "mayor numero de vistas" in q
+        or "mayor cantidad de vistas" in q
+    ):
         return "views"
-    return default
 
+    return default
 
 def detect_limit(question: str, default: int = 5) -> int:
     match = re.search(r"\btop\s+(\d{1,2})\b", normalize_text(question))
@@ -501,25 +514,42 @@ def detect_year(question: str) -> Optional[int]:
 
 
 def looks_like_metric_ranking_question(question: str) -> bool:
+    """
+    Detecta preguntas que se pueden resolver con una consulta directa a BigQuery,
+    sin gastar Gemini. La idea es atrapar rankings simples por metricas:
+    views/vistas, likes, comentarios, engagement, views por dia/minuto, etc.
+    """
     q = normalize_text(question)
+
+    # Casos muy comunes: "top 5 videos", "ranking de videos", etc.
     if ("top" in q or "ranking" in q) and ("video" in q or "videos" in q):
         return True
 
     subject_markers = [
         "que video", "cual video", "cuales videos", "que videos",
-        "video con", "videos con",
+        "cuales son los videos", "cuales son mis videos",
+        "cuales fueron los videos", "cuales son los video",
+        "videos con", "video con",
+        "videos que tienen", "videos que tuvieron",
+        "videos que generaron", "videos que recibieron",
+        "los videos con", "el video con",
     ]
+
     metric_markers = [
-        "mas vistas", "mas views", "mayor views", "mayor numero de vistas",
-        "mas visto", "mas vistos", "mas likes", "mas me gusta",
-        "mas comentarios", "mayor engagement", "mejor engagement",
-        "mas engagement", "views por dia", "vistas por dia",
+        "mas vistas", "mas views", "mayor views", "mayores views",
+        "mayor numero de vistas", "mayor cantidad de vistas",
+        "mas visto", "mas vistos", "mejor rendimiento",
+        "mas likes", "mas me gusta", "mayor numero de likes",
+        "mas comentarios", "mayor numero de comentarios",
+        "mayor engagement", "mejor engagement", "mas engagement",
+        "mayor interaccion", "mejor interaccion", "mas interaccion",
+        "views por dia", "vistas por dia",
         "views por minuto", "vistas por minuto",
     ]
+
     return any(marker in q for marker in subject_markers) and any(
         marker in q for marker in metric_markers
     )
-
 
 def detect_duration_type(question: str) -> Optional[str]:
     q = normalize_text(question)
@@ -1362,6 +1392,10 @@ def deterministic_plan_from_question(
     question: str,
     history: Optional[list[dict[str, str]]] = None,
 ) -> Optional[dict[str, Any]]:
+    """
+    Reglas rapidas que NO usan Gemini.
+    Todo lo que sea ranking/metrica simple debe resolverse desde BigQuery.
+    """
     q = normalize_text(question)
 
     if looks_like_metric_ranking_question(question):
@@ -1372,7 +1406,7 @@ def deterministic_plan_from_question(
         plan["year"] = detect_year(question)
         plan["limit"] = detect_limit(
             question,
-            default=3 if ("top" in q or "ranking" in q or "videos" in q) else 1,
+            default=5 if "videos" in q else 1,
         )
         duration_type = detect_duration_type(question)
         if duration_type:
@@ -1399,7 +1433,7 @@ def deterministic_plan_from_question(
         plan = default_intent_plan()
         plan["intent"] = "topic_analysis"
         plan["order_by"] = "views"
-        plan["limit"] = detect_limit(question, default=3)
+        plan["limit"] = detect_limit(question, default=5)
         return normalize_intent_plan(plan)
 
     if ("tema" in q or "temas" in q) and any(phrase in q for phrase in [
@@ -1408,11 +1442,10 @@ def deterministic_plan_from_question(
         plan = default_intent_plan()
         plan["intent"] = "topic_analysis"
         plan["order_by"] = "engagement"
-        plan["limit"] = detect_limit(question, default=3)
+        plan["limit"] = detect_limit(question, default=5)
         return normalize_intent_plan(plan)
 
     return None
-
 
 def interpret_question(question: str, history: Optional[list[dict[str, str]]] = None) -> dict[str, Any]:
     deterministic_plan = deterministic_plan_from_question(question, history=history)
