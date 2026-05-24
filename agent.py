@@ -80,14 +80,73 @@ def get_bigquery_client() -> bigquery.Client:
 
     return bigquery.Client(project=PROJECT_ID)
 
+def _get_all_api_keys() -> list[str]:
+    """Recopila todas las API keys disponibles en orden de prioridad."""
+    keys = []
+    
+    # Keys numeradas: GOOGLE_API_KEY_1, GOOGLE_API_KEY_2, ...
+    for i in range(1, 6):
+        key = _secret_or_env(f"GOOGLE_API_KEY_{i}")
+        if key and key not in keys:
+            keys.append(key)
+    
+    # Key principal sin número (compatibilidad con lo que ya tienes)
+    main_key = _secret_or_env("GOOGLE_API_KEY")
+    if main_key and main_key not in keys:
+        keys.append(main_key)
+    
+    return keys
+
 
 @st.cache_resource(show_spinner=False)
-def get_gemini_client() -> genai.Client:
-    api_key = _secret_or_env("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("No se encontro GOOGLE_API_KEY en Secrets ni en variables de entorno.")
-    return genai.Client(api_key=api_key)
+# Ya no se cachea como recurso único — ahora es solo un helper
+def get_gemini_client(api_key: Optional[str] = None) -> genai.Client:
+    key = api_key or _secret_or_env("GOOGLE_API_KEY")
+    if not key:
+        raise ValueError("No se encontro ninguna GOOGLE_API_KEY disponible.")
+    return genai.Client(api_key=key)
 
+
+@st.cache_resource(show_spinner=False)
+def get_api_keys() -> list[str]:
+    """Cachea la lista de keys disponibles al arrancar la app."""
+    keys = _get_all_api_keys()
+    if not keys:
+        raise ValueError(
+            "No se encontro ninguna API key. "
+            "Agrega GOOGLE_API_KEY o GOOGLE_API_KEY_1 ... GOOGLE_API_KEY_5 en Secrets."
+        )
+    return keys
+
+
+# Estado de keys agotadas en sesión para no reintentar las que ya fallaron
+def _get_exhausted_keys() -> set[str]:
+    if "exhausted_api_keys" not in st.session_state:
+        st.session_state["exhausted_api_keys"] = set()
+    return st.session_state["exhausted_api_keys"]
+
+
+def _mark_key_exhausted(api_key: str) -> None:
+    _get_exhausted_keys().add(api_key)
+
+
+def _reset_exhausted_keys() -> None:
+    st.session_state["exhausted_api_keys"] = set()
+
+
+def get_available_keys() -> list[str]:
+    """Devuelve keys que aún no están marcadas como agotadas."""
+    all_keys = get_api_keys()
+    exhausted = _get_exhausted_keys()
+    available = [k for k in all_keys if k not in exhausted]
+    
+    # Si todas están agotadas, resetea y vuelve a intentar con todas
+    # (los límites de cuota se recuperan con el tiempo)
+    if not available:
+        _reset_exhausted_keys()
+        available = all_keys
+    
+    return available
 
 @st.cache_resource(show_spinner=False)
 def get_sentence_transformer_model(model_name: str):
@@ -1272,30 +1331,54 @@ def gemini_generate(
     response_mime_type: Optional[str] = None,
     models: Optional[list[str]] = None,
 ) -> str:
-    client = get_gemini_client()
-    last_error: Optional[Exception] = None
     selected_models = models or model_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODEL)
+    last_error: Optional[Exception] = None
+
     for model_name in selected_models:
-        for attempt in range(3):
-            try:
-                config_args = {"temperature": temperature}
-                if response_mime_type:
-                    config_args["response_mime_type"] = response_mime_type
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(**config_args),
-                )
-                return response.text or ""
-            except Exception as exc:
-                last_error = exc
-                error_text = str(exc).lower()
-                temporary = any(token in error_text for token in [
-                    "429", "503", "unavailable", "resource_exhausted", "quota", "rate", "temporar",
-                ])
-                if not temporary:
+        available_keys = get_available_keys()
+
+        for api_key in available_keys:
+            for attempt in range(3):
+                try:
+                    client = get_gemini_client(api_key=api_key)
+                    config_args: dict[str, Any] = {"temperature": temperature}
+                    if response_mime_type:
+                        config_args["response_mime_type"] = response_mime_type
+
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(**config_args),
+                    )
+                    return response.text or ""
+
+                except Exception as exc:
+                    last_error = exc
+                    error_text = str(exc).lower()
+
+                    # Error de cuota o autenticación en esta key — pasa a la siguiente
+                    quota_error = any(token in error_text for token in [
+                        "429", "quota", "resource_exhausted", "rate",
+                    ])
+                    auth_error = any(token in error_text for token in [
+                        "401", "403", "api_key", "invalid", "permission",
+                    ])
+
+                    if quota_error or auth_error:
+                        _mark_key_exhausted(api_key)
+                        break  # No reintentes con esta key, pasa a la siguiente
+
+                    # Error temporal del servidor — reintenta con la misma key
+                    temporary = any(token in error_text for token in [
+                        "503", "unavailable", "temporar",
+                    ])
+                    if temporary:
+                        time.sleep(min(45, 2 ** attempt + random.uniform(0, 1.5)))
+                        continue
+
+                    # Error desconocido — no reintentar
                     raise
-                time.sleep(min(45, 2 ** attempt + random.uniform(0, 1.5)))
+
     if last_error:
         raise last_error
     return ""
