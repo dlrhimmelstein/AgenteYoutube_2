@@ -328,6 +328,69 @@ def plot_views_by_weekday():
         st.error(f"Error en gráfica de vistas por día: {e}")
         return None
 
+@st.cache_data(ttl=600)
+def plot_engagement_by_weekday():
+    """Gráfica de barras: engagement promedio por día de la semana"""
+    try:
+        query = f"""
+        SELECT 
+            FORMAT_TIMESTAMP('%A', SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion)) as dia_semana,
+            AVG(engagement) as avg_engagement,
+            COUNT(*) as num_videos
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_NAME}`
+        WHERE channel_id = '{CHANNEL_ID}'
+          AND fecha_publicacion IS NOT NULL
+          AND SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', fecha_publicacion) IS NOT NULL
+        GROUP BY dia_semana
+        ORDER BY 
+            CASE dia_semana
+                WHEN 'Monday' THEN 1
+                WHEN 'Tuesday' THEN 2
+                WHEN 'Wednesday' THEN 3
+                WHEN 'Thursday' THEN 4
+                WHEN 'Friday' THEN 5
+                WHEN 'Saturday' THEN 6
+                WHEN 'Sunday' THEN 7
+            END
+        """
+        result = retriever.client.query(query).result()
+        rows = [dict(row) for row in result]
+        if not rows:
+            st.info("No hay datos suficientes para mostrar engagement por día.")
+            return None
+        
+        df = pd.DataFrame(rows)
+        # Traducir días al español
+        dias_es = {
+            'Monday': 'Lunes', 'Tuesday': 'Martes', 'Wednesday': 'Miércoles',
+            'Thursday': 'Jueves', 'Friday': 'Viernes', 'Saturday': 'Sábado', 'Sunday': 'Domingo'
+        }
+        df['dia_semana'] = df['dia_semana'].map(dias_es).fillna(df['dia_semana'])
+        
+        import plotly.express as px
+        fig = px.bar(
+            df,
+            x='dia_semana',
+            y='avg_engagement',
+            title="❤️ Engagement promedio por día de publicación",
+            labels={'dia_semana': 'Día', 'avg_engagement': 'Engagement promedio (%)'},
+            color='avg_engagement',
+            color_continuous_scale='Reds',
+            text='num_videos'
+        )
+        fig.update_traces(textposition='outside')
+        fig.update_layout(
+            plot_bgcolor='#1e1e1e',
+            paper_bgcolor='#1e1e1e',
+            font_color='white',
+            title_font_color='white',
+            xaxis=dict(tickangle=0)
+        )
+        return fig
+    except Exception as e:
+        st.error(f"Error en gráfica de engagement por día: {e}")
+        return None
+
 
 # =========================
 # 5. ESTILOS GENERALES DE LA APP
@@ -809,7 +872,7 @@ with col_izq:
 
     tipo_grafica = st.selectbox(
         "Selecciona la métrica a visualizar:",
-        ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día"),
+        ("Vistas por tema", "Engagement por tema", "Evolución de suscriptores", "Vistas promedio por día", "Engagement promedio por día"),
         key="selector_graficas",
     )
 
@@ -837,7 +900,12 @@ with col_izq:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No hay datos suficientes para mostrar vistas por día.")
-
+    elif tipo_grafica == "Engagement promedio por día":
+        fig = plot_engagement_by_weekday()
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No hay datos suficientes para mostrar engagement por día.")
 
 # Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
 with col_der:
