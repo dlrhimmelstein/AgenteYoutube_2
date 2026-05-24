@@ -1893,7 +1893,6 @@ def generate_final_answer(
         extra_rules = """
 - Recomienda un dia principal y un dia alternativo usando views, likes, comentarios, engagement y consistencia de muestra.
 - Explica brevemente el criterio.
-- Si hay pocos videos en un dia, menciona que la muestra es pequena.
 - Tono claro y con humor ligero.
 """
     elif response_mode == "growth_rank":
@@ -1936,6 +1935,7 @@ Eres un agente conversacional RAG para creadores de contenido de YouTube.
 
 Reglas obligatorias:
 - Responde SOLO usando el contexto recuperado.
+- Escribe en español natural con acentos y signos correctos: día, publicación, métricas, interacción, recomendación, análisis, título, próximo, más, también, sí, qué, cuál, dónde, cuándo.
 - No inventes videos, metricas, URLs, fechas ni minutos.
 - Si el minuto es aproximado, dilo claramente.
 - Si no hay informacion suficiente, dilo.
@@ -2187,7 +2187,6 @@ def format_upload_day_answer(context: dict[str, Any]) -> str:
     alternative = rows[1] if len(rows) > 1 else None
     lines = [
         f"Dia recomendado: **{primary.get('dia_semana_publicacion', 'N/A')}**",
-        f"- Videos en muestra: {format_count(primary.get('videos'))}",
         f"- Views promedio: {format_count(primary.get('views_promedio'))}",
         f"- Likes promedio: {format_count(primary.get('likes_promedio'))}",
         f"- Comentarios promedio: {format_count(primary.get('comentarios_promedio'))}",

@@ -53,6 +53,8 @@ if not has_gcp_secret and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
     )
 
 
+
+
 # =========================
 # 3. IMPORTACION DEL AGENTE
 # =========================
@@ -71,7 +73,6 @@ except Exception as exc:
     st.error("Error al importar el agente desde agent.py.")
     st.exception(exc)
     st.stop()
-
 
 # =========================
 # 4. RECURSOS
