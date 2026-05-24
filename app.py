@@ -995,6 +995,18 @@ st.markdown(
         border-color: #ffffff !important;
         transform: translateY(-2px);
     }
+
+    .video-card.viral {
+    border: 2px solid #e63946;
+    box-shadow: 0 0 8px #e63946;
+    }
+
+    /* Color blanco para las etiquetas de number_input y slider */
+    div[data-testid="stNumberInput"] label,
+    div[data-testid="stSlider"] label {
+        color: #ffffff !important;
+        font-weight: 500 !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1093,7 +1105,7 @@ with col_izq:
 
     # --- Top videos de crecimiento ---
     if top_videos:
-        st.markdown("## 🚀 Top Videos de Crecimiento")
+        st.markdown("## 🚀 Videos Más Vistos")
         cols = st.columns(3)
         for idx, video in enumerate(top_videos[:6]):
             with cols[idx % 3]:
@@ -1245,6 +1257,86 @@ with col_izq:
 
     # Ejecutar la visualización
     mostrar_grafica_dinamica(st.session_state['metrica_seleccionada'], st.session_state['tipo_visualizacion'])
+
+    # ============================================
+    # SECCIÓN: EXPLORADOR DE VIDEOS (con filtros y miniaturas pequeñas)
+    # ============================================
+    st.markdown("## 🔥 Explorador de Videos")
+    st.markdown("_Filtra y ordena los videos según métricas clave_")
+
+    # --- Controles interactivos (filtros y orden) ---
+    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+    with col1:
+        orden_por = st.selectbox(
+            "Ordenar por",
+            options=["views", "engagement", "likes", "duracion_minutos"],
+            format_func=lambda x: {"views": "👁️ Vistas", "engagement": "📈 Engagement", "likes": "❤️ Likes", "duracion_minutos": "⏱️ Duración"}[x],
+            key="orden_videos"
+        )
+    with col2:
+        min_views = st.number_input("Vistas mínimas (miles)", min_value=0, value=100, step=50, key="min_views") * 1000
+    with col3:
+        min_engagement = st.slider("Engagement mínimo (%)", 0.0, 15.0, 0.0, 0.5, key="min_eng") / 100
+    with col4:
+        max_resultados = st.number_input("Mostrar", min_value=5, max_value=50, value=15, step=5, key="max_res")
+
+    # Obtener lista amplia de videos (por ejemplo, 50) ordenada según selección
+    videos_crudos = retriever.ranked_videos(order_by=orden_por, limit=50)
+
+    # Aplicar filtros (vistas mínimas y engagement mínimo)
+    videos_filtrados = []
+    for v in videos_crudos:
+        if v.get('views', 0) >= min_views and v.get('engagement', 0) >= min_engagement:
+            videos_filtrados.append(v)
+
+    # Limitar número de resultados
+    videos_filtrados = videos_filtrados[:max_resultados]
+
+    if not videos_filtrados:
+        st.info("No hay videos que cumplan los filtros seleccionados. Ajusta los umbrales.")
+    else:
+        # Mostrar cada video en una fila con miniatura pequeña
+        for video in videos_filtrados:
+            titulo = video.get('titulo_video', 'Sin título')
+            views = video.get('views', 0)
+            likes = video.get('likes', 0)
+            engagement = video.get('engagement', 0) * 100  # a porcentaje
+            duracion = video.get('duracion_minutos', 0)
+            url_video = video.get('url_video', '')
+
+            # Extraer ID de la miniatura
+            video_id = None
+            if url_video:
+                if 'v=' in url_video:
+                    video_id = url_video.split('v=')[1].split('&')[0]
+                elif 'youtu.be/' in url_video:
+                    video_id = url_video.split('youtu.be/')[1].split('?')[0]
+            if video_id:
+                thumb_url = f"https://img.youtube.com/vi/{video_id}/default.jpg"  # miniatura pequeña (120x90)
+            else:
+                thumb_url = "https://placehold.co/120x90/1e1e1e/e63946?text=No"
+
+            # Formatear duración
+            if duracion >= 60:
+                horas = int(duracion // 60)
+                minutos = int(duracion % 60)
+                duracion_str = f"{horas}h {minutos}m"
+            else:
+                duracion_str = f"{int(duracion)} min"
+
+            # Crear una fila con columnas: miniatura | info
+            c1, c2 = st.columns([1, 5])
+            with c1:
+                st.markdown(f'<a href="{url_video}" target="_blank"><img src="{thumb_url}" width="80" style="border-radius: 8px;"></a>', unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                **{titulo}**  
+                <span style="font-size:0.75rem; color:#a0a0a0;">⏱️ {duracion_str}</span> &nbsp;|&nbsp;
+                <span style="font-size:0.75rem; color:#a0a0a0;">👁️ {views:,}</span> &nbsp;|&nbsp;
+                <span style="font-size:0.75rem; color:#a0a0a0;">❤️ {likes:,}</span> &nbsp;|&nbsp;
+                <span style="font-size:0.75rem; color:#10b981;">📈 {engagement:.1f}%</span>
+                """, unsafe_allow_html=True)
+            st.divider()
 
 # Actualizacion, movimiento del chat bot a la parte derecha, para que quede mas visible y con mas espacio para las respuestas largas, ademas de que se vea mas como un asistente personal que siempre esta a la mano.
 with col_der:
