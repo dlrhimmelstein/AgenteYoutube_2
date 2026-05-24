@@ -3,6 +3,7 @@
 import os
 import pandas as pd
 import streamlit as st
+import importlib
 import plotly.express as px
 import plotly.graph_objects as go
 from google.cloud import bigquery
@@ -57,21 +58,31 @@ if not has_gcp_secret and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
 # 3. IMPORTACION DEL AGENTE
 # =========================
 
+# =========================
+# 3. IMPORTACION DEL AGENTE
+# =========================
+
 try:
-    from agent import (
-        CHANNEL_ID,
-        DATASET_ID,
-        PROJECT_ID,
-        SEGMENTS_TABLE_ID,
-        TABLE_NAME,
-        get_agent,
-        get_retriever,
-    )
+    import agent as agent_module
+
+    agent_module = importlib.reload(agent_module)
+    AGENT_BUILD_ID = agent_module.AGENT_BUILD_ID
+    CHANNEL_ID = agent_module.CHANNEL_ID
+    DATASET_ID = agent_module.DATASET_ID
+    PROJECT_ID = agent_module.PROJECT_ID
+    SEGMENTS_TABLE_ID = agent_module.SEGMENTS_TABLE_ID
+    TABLE_NAME = agent_module.TABLE_NAME
+    get_agent = agent_module.get_agent
+    get_retriever = agent_module.get_retriever
 except Exception as exc:
-    st.error("Error al importar el agente desde agent.py.")
+    st.error("Error al importar el agente desde agent_Liz.py.")
     st.exception(exc)
     st.stop()
 
+if st.session_state.get("_loaded_agent_build_id") != AGENT_BUILD_ID:
+    st.cache_resource.clear()
+    st.cache_data.clear()
+    st.session_state["_loaded_agent_build_id"] = AGENT_BUILD_ID
 
 # =========================
 # 4. RECURSOS
