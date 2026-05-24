@@ -464,6 +464,9 @@ def looks_like_video_performance_question(question: str) -> bool:
         "como rindio", "rendimiento de", "estadisticas de",
         "metricas de", "views del video", "vistas del video",
         "likes del video", "engagement del video", "analiza el video",
+        "analisis del video", "opinion del video", "opina del video",
+        "que opinas del video", "que piensas del video",
+        "que te parece el video", "como ves el video",
     ]
     video_words = ["video", "short", "capitulo", "episodio"]
     return any(phrase in q for phrase in performance_phrases) and (
@@ -1502,6 +1505,7 @@ Campos JSON:
 
 Reglas:
 - "como le fue al video X", "que tal le fue al video X", "estadisticas/metricas/rendimiento del video X" => video_performance.
+- "que opinas del video X", "que te parece el video X", "analiza el video X" => video_performance; no lo trates como tema general.
 - "en que video/episodio/capitulo/minuto/momento hablaron de X" => topic_moments.
 - "en que tema se hablo de X" o "en que temas hablaron de X" => topic_moments; topic debe ser X, no la palabra "tema".
 - El canal usa espanol mexicano: interpreta jerga como wey, vato, morra, ligue, quedante, ghostear, toxico, red flag y eneje por su significado cultural.
@@ -1668,15 +1672,15 @@ def generate_final_answer(
 """
     elif response_mode == "video_performance":
         extra_rules = """
-- Responde de forma realista: no digas "excelente", "fantastico" ni "oro puro" si el diagnostico no lo sostiene.
-- Primero da un veredicto: alto, mixto, regular o bajo, usando "diagnostico_rendimiento.evaluacion_general".
-- Incluye titulo, URL, views, likes, comentarios, engagement, views por dia y views por minuto si existen.
-- Usa "diagnostico_rendimiento.metricas" para decir si views, likes, comentarios y engagement son altos o bajos frente al canal.
-- Si una metrica es alta y otra baja, dilo sin suavizarlo: rendimiento mixto.
-- Si hay "prediccion_ml", explica en una frase si supero o quedo debajo de lo esperado.
-- Cierra con una recomendacion concreta para replicar o mejorar ese rendimiento.
-- Si hay varios posibles videos, usa el primer resultado como principal y menciona que fue el match mas probable.
-- Extension maxima: 210 palabras.
+- Responde SOLO sobre "video_principal"; no menciones otros videos aunque existan posibles coincidencias.
+- Formato obligatorio:
+  1. Titulo y URL.
+  2. Metricas: views, likes, comentarios, engagement, views por dia y views por minuto si existen.
+  3. Lectura breve: alto, medio, bajo o mixto segun "diagnostico_rendimiento".
+  4. Un comentario/recomendacion de una sola frase.
+- No hagas observaciones multiples ni recomendaciones numeradas.
+- No digas "excelente", "fantastico" ni "oro puro" si el diagnostico no lo sostiene.
+- Extension maxima: 120 palabras.
 """
     else:
         extra_rules = """
@@ -1946,6 +1950,72 @@ def build_video_performance_diagnosis(video: dict[str, Any], benchmarks: Optiona
     }
 
 
+def format_count(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        return f"{int(round(float(value))):,}"
+    except Exception:
+        return str(value)
+
+
+def format_rate(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        numeric = float(value)
+    except Exception:
+        return str(value)
+    if abs(numeric) <= 1:
+        numeric *= 100
+    return f"{numeric:.2f}%"
+
+
+def format_decimal(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        return f"{float(value):,.2f}"
+    except Exception:
+        return str(value)
+
+
+def format_video_performance_answer(context: dict[str, Any]) -> str:
+    video = context.get("video_principal") or {}
+    diagnosis = context.get("diagnostico_rendimiento") or {}
+    metric_diagnosis = diagnosis.get("metricas") or {}
+    overall = diagnosis.get("evaluacion_general") or "sin diagnostico"
+
+    views_level = (metric_diagnosis.get("views") or {}).get("nivel", "sin dato")
+    comments_level = (metric_diagnosis.get("comentarios") or {}).get("nivel", "sin dato")
+    engagement_level = (metric_diagnosis.get("engagement") or {}).get("nivel", "sin dato")
+
+    title = video.get("titulo_video") or "Video encontrado"
+    url = video.get("url_video") or "Sin URL"
+    comment = (
+        f"Lectura: rendimiento {overall}; views {views_level}, comentarios {comments_level} "
+        f"y engagement {engagement_level} frente al canal. "
+    )
+    if overall in {"alto", "medio-alto"}:
+        comment += "Conviene replicar tema/gancho y convertir los mejores momentos en clips."
+    elif overall == "mixto":
+        comment += "Hay que revisar miniatura/titulo para subir alcance sin perder interaccion."
+    else:
+        comment += "Conviene probar otro gancho o recortar el momento mas fuerte para Shorts."
+
+    return (
+        f"**{title}**\n"
+        f"URL: {url}\n\n"
+        f"- Views: {format_count(video.get('views'))}\n"
+        f"- Likes: {format_count(video.get('likes'))}\n"
+        f"- Comentarios: {format_count(video.get('comentarios'))}\n"
+        f"- Engagement: {format_rate(video.get('engagement'))}\n"
+        f"- Views por dia: {format_decimal(video.get('views_por_dia'))}\n"
+        f"- Views por minuto: {format_decimal(video.get('views_por_minuto'))}\n\n"
+        f"{comment}"
+    )
+
+
 # =========================
 # 7. AGENTE RAG
 # =========================
@@ -2008,7 +2078,7 @@ class RAGYouTubeAgent:
                 "diagnostico_rendimiento": build_video_performance_diagnosis(videos[0], benchmarks),
                 "prediccion_ml": prediction[:1],
             }
-            return generate_final_answer(question, context, history=history, response_mode="video_performance")
+            return format_video_performance_answer(context)
 
         if intent in {"channel_opinion", "famous_person_opinion"}:
             person = plan.get("person")
