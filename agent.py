@@ -66,7 +66,7 @@ OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
 
 MIN_SEMANTIC_SCORE = float(_secret_or_env("MIN_SEMANTIC_SCORE", "0.18") or 0.18)
 MAX_CONTEXT_CHARS = int(_secret_or_env("MAX_CONTEXT_CHARS", "12000") or 12000)
-AGENT_BUILD_ID = "agent_Liz_fastpath_openrouter_2026-05-24_v9"
+AGENT_BUILD_ID = "agent_Liz_fastpath_openrouter_2026-05-24_v10"
 
 
 # =========================
@@ -2377,6 +2377,11 @@ def format_metric_value(metric_key: str, value: Any) -> str:
     return format_count(value)
 
 
+def format_label(value: Any) -> str:
+    text = str(value or "N/A").strip()
+    return text.replace("_", " ")
+
+
 def format_filters_summary(filters: Optional[SearchFilters]) -> str:
     if not filters:
         return "todos los videos"
@@ -2457,11 +2462,24 @@ def format_topic_analysis_answer(context: dict[str, Any]) -> str:
     if not rows:
         return "No encontre temas suficientes en BigQuery para responder con seguridad."
 
-    lines = [f"Estos son los temas principales ordenados por **{criterion}**:"]
+    top = rows[0]
+    top_views = (context.get("temas_mas_views") or [None])[0]
+    lines = [
+        f"Mi lectura: si buscamos crecer con cabeza, yo miraria primero los temas por **{criterion}**, "
+        "pero sin perder de vista el volumen. El engagement te dice donde la audiencia se prende; "
+        "las views te dicen donde el algoritmo ya encontro camino.",
+        "",
+        f"El tema que pondria al frente es **{format_label(top.get('tema_legible'))}**: "
+        f"tiene {format_rate(top.get('engagement_promedio'))} de engagement con "
+        f"{format_count(top.get('videos'))} videos. Eso no se ve como golpe de suerte; "
+        "se ve como una linea editorial que ya sabe provocar reaccion.",
+        "",
+        f"Top temas por **{criterion}**:",
+    ]
     for idx, row in enumerate(rows[:3], start=1):
         lines.extend([
             "",
-            f"**{idx}. {row.get('tema_legible', 'Sin tema')}**",
+            f"**{idx}. {format_label(row.get('tema_legible'))}**",
             f"- Videos: {format_count(row.get('videos'))}",
             f"- Views totales: {format_count(row.get('views_totales'))}",
             f"- Likes totales: {format_count(row.get('likes_totales'))}",
@@ -2469,10 +2487,19 @@ def format_topic_analysis_answer(context: dict[str, Any]) -> str:
             f"- Engagement promedio: {format_rate(row.get('engagement_promedio'))}",
         ])
 
+    if top_views and top_views.get("tema_legible") != top.get("tema_legible"):
+        lines.extend([
+            "",
+            f"Para alcance bruto, el tema mas fuerte es **{format_label(top_views.get('tema_legible'))}** "
+            f"con {format_count(top_views.get('views_totales'))} views totales. "
+            "Yo lo usaria como motor de descubrimiento y mezclaria sus ganchos con el tema de mayor engagement.",
+        ])
+
     lines.append("")
     lines.append(
-        "Comentario: prioriza el primer tema para nuevas piezas y usa el segundo como variante, "
-        "porque ya tienen senales medibles de interes en el canal."
+        "Recomendacion practica: para el siguiente bloque de contenido, haria 2 piezas del tema #1 "
+        "y 1 pieza del tema con mas views. Asi no apuestas todo a alcance ni todo a comunidad: "
+        "combinas descubrimiento con conexion, que es donde el canal puede empujar mas fuerte."
     )
     return "\n".join(lines)
 
@@ -2502,24 +2529,59 @@ def format_upload_day_answer(context: dict[str, Any]) -> str:
         row for row in rows
         if safe_float(row.get("videos")) < 10
     ]
+    top_topics = context.get("temas_mejor_interaccion") or []
+    top_views_topics = context.get("temas_mas_views") or []
+    best_topic = top_topics[0] if top_topics else None
+    best_reach_topic = top_views_topics[0] if top_views_topics else None
     lines = [
-        f"Dia recomendado para alcance: **{primary.get('dia_semana_publicacion', 'N/A')}**",
+        "Yo lo separaria en dos decisiones, porque no siempre el dia que mas views trae es el mismo "
+        "dia que mas conversacion genera. Para crecer alcance, esa diferencia importa.",
+        "",
+        f"**Dia recomendado para alcance: {primary.get('dia_semana_publicacion', 'N/A')}**",
         f"- Videos en muestra: {format_count(primary.get('videos'))}",
         f"- Views promedio: {format_count(primary.get('views_promedio'))}",
         f"- Likes promedio: {format_count(primary.get('likes_promedio'))}",
         f"- Comentarios promedio: {format_count(primary.get('comentarios_promedio'))}",
         f"- Engagement promedio: {format_rate(primary.get('engagement_promedio'))}",
+        "",
+        "Este dia lo usaria para el video mas ambicioso: el que necesita empuje inicial, mejor miniatura "
+        "y un titulo con promesa clara. Aqui el objetivo es entrar fuerte al feed.",
     ]
 
     if engagement_day.get("dia_semana_publicacion") != primary.get("dia_semana_publicacion"):
         lines.extend([
             "",
-            f"Mejor dia para engagement/comunidad: **{engagement_day.get('dia_semana_publicacion', 'N/A')}**",
+            f"**Mejor dia para engagement/comunidad: {engagement_day.get('dia_semana_publicacion', 'N/A')}**",
             f"- Videos en muestra: {format_count(engagement_day.get('videos'))}",
             f"- Views promedio: {format_count(engagement_day.get('views_promedio'))}",
             f"- Likes promedio: {format_count(engagement_day.get('likes_promedio'))}",
             f"- Comentarios promedio: {format_count(engagement_day.get('comentarios_promedio'))}",
             f"- Engagement promedio: {format_rate(engagement_day.get('engagement_promedio'))}",
+            "",
+            "Este es el dia para contenido que busque respuesta: opinion, historia con pregunta abierta, "
+            "chisme debatible o tema que invite a comentar. No lo trataria como segunda opcion; "
+            "lo trataria como una jugada distinta.",
+        ])
+
+    if best_topic:
+        lines.extend([
+            "",
+            f"**Tema que recomendaria para esa publicacion:** {format_label(best_topic.get('tema_legible'))}",
+            f"- Engagement promedio del tema: {format_rate(best_topic.get('engagement_promedio'))}",
+            f"- Views acumuladas: {format_count(best_topic.get('views_totales'))}",
+            f"- Videos en muestra: {format_count(best_topic.get('videos'))}",
+            "",
+            "Por que: si ya vas a elegir un dia con buena senal, conviene ponerle encima un tema que "
+            "la audiencia ya demostro que responde. Dia correcto + tema correcto es mucho mejor que "
+            "solo publicar en el dia correcto.",
+        ])
+
+    if best_reach_topic and (not best_topic or best_reach_topic.get("tema_legible") != best_topic.get("tema_legible")):
+        lines.extend([
+            "",
+            f"Si quieres priorizar alcance masivo, tambien miraria **{format_label(best_reach_topic.get('tema_legible'))}**, "
+            f"que trae {format_count(best_reach_topic.get('views_totales'))} views totales. "
+            "Ese puede ser el tema de lanzamiento para el dia de alcance.",
         ])
 
     if sample_warning:
@@ -2531,8 +2593,8 @@ def format_upload_day_answer(context: dict[str, Any]) -> str:
 
     lines.append("")
     lines.append(
-        "Lectura practica: usa el dia de alcance para lanzamientos grandes y el dia de engagement "
-        "cuando busques mas conversacion. Asi el agente no confunde segunda posicion por views con mejor engagement."
+        "Plan simple: publica el contenido mas fuerte en el dia de alcance, y reserva el dia de engagement "
+        "para piezas que pidan conversacion. Asi el canal no solo junta vistas: tambien entrena comunidad."
     )
     return "\n".join(lines)
 
@@ -2571,28 +2633,37 @@ def format_format_analysis_answer(context: dict[str, Any]) -> str:
         )
 
     lines = [
-        f"Formato recomendado: **{best_engagement.get('formato_video', 'N/A')}**",
+        "Mi recomendacion no seria elegir formato solo por gusto, sino por funcion: "
+        "que formato te da mas reaccion, cual acelera mas el consumo y cual puedes repetir sin quemarte.",
+        "",
+        f"**Formato que recomendaria primero: {format_label(best_engagement.get('formato_video'))}**",
         f"- Videos en muestra: {format_count(best_engagement.get('videos'))}",
         f"- Engagement promedio: {format_rate(best_engagement.get('engagement_promedio'))}",
         f"- Views promedio: {format_count(best_engagement.get('views_promedio'))}",
         f"- Views/min promedio: {format_decimal(best_engagement.get('views_por_minuto_promedio'))}",
         f"- Likes promedio: {format_count(best_engagement.get('likes_promedio'))}",
         f"- Comentarios promedio: {format_count(best_engagement.get('comentarios_promedio'))}",
+        "",
+        "Lectura: este formato es el que mejor convierte atencion en reaccion. Eso es valioso porque "
+        "no solo estas buscando que te vean; estas buscando que la audiencia haga algo despues de verte.",
     ]
 
     if best_speed.get("formato_video") != best_engagement.get("formato_video"):
         lines.extend([
             "",
-            f"Para retencion/velocidad, revisa tambien: **{best_speed.get('formato_video', 'N/A')}**",
+            f"**Formato con mejor velocidad/retencion: {format_label(best_speed.get('formato_video'))}**",
             f"- Views/min promedio: {format_decimal(best_speed.get('views_por_minuto_promedio'))}",
             f"- Engagement promedio: {format_rate(best_speed.get('engagement_promedio'))}",
+            "",
+            "Este lo usaria cuando quieras probar ganchos rapidos, remates fuertes o temas que se entienden "
+            "en segundos. Es tu laboratorio para descubrir que idea merece version larga.",
         ])
 
     if best_duration:
         lines.extend([
             "",
-            f"Duracion que mejor acelera: **{best_duration.get('rango_duracion', 'N/A')}**",
-            f"- Tipo: {best_duration.get('tipo_duracion', 'N/A')}",
+            f"**Duracion que mejor acelera: {best_duration.get('rango_duracion', 'N/A')}**",
+            f"- Tipo: {format_label(best_duration.get('tipo_duracion'))}",
             f"- Videos en muestra: {format_count(best_duration.get('videos'))}",
             f"- Views/min promedio: {format_decimal(best_duration.get('views_por_minuto_promedio'))}",
             f"- Engagement promedio: {format_rate(best_duration.get('engagement_promedio'))}",
@@ -2600,8 +2671,9 @@ def format_format_analysis_answer(context: dict[str, Any]) -> str:
 
     lines.append("")
     lines.append(
-        "Recomendacion practica: prioriza el formato con mejor engagement para conectar con la audiencia; "
-        "si quieres alcance rapido, combina esa idea con el formato que tenga mas views/min."
+        "Plan que seguiria: haz el proximo video en el formato recomendado, con duracion corta si el tema "
+        "permite ir directo al punto. Si el tema explota, entonces lo conviertes en una pieza mas larga. "
+        "Asi usas el formato rapido como radar y el formato largo como profundizacion, no como apuestas aisladas."
     )
     return "\n".join(lines)
 
@@ -2829,6 +2901,8 @@ class RAGYouTubeAgent:
                     "comentarios, engagement, views_por_dia y views_por_minuto."
                 ),
                 "resultados_por_dia": self.retriever.upload_day_performance(),
+                "temas_mejor_interaccion": self.retriever.topic_performance(limit=3, order_by="engagement"),
+                "temas_mas_views": self.retriever.topic_performance(limit=3, order_by="views"),
             }
             return format_upload_day_answer(context)
 
