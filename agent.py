@@ -66,7 +66,7 @@ OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
 
 MIN_SEMANTIC_SCORE = float(_secret_or_env("MIN_SEMANTIC_SCORE", "0.18") or 0.18)
 MAX_CONTEXT_CHARS = int(_secret_or_env("MAX_CONTEXT_CHARS", "12000") or 12000)
-AGENT_BUILD_ID = "agent_Liz_fastpath_openrouter_2026-05-24_v10"
+AGENT_BUILD_ID = "agent_Liz_base_plus_format_day_2026-05-24_v11"
 
 
 # =========================
@@ -997,7 +997,7 @@ class BigQueryYouTubeRetriever:
                 params.append(bigquery.ScalarQueryParameter("min_engagement", "FLOAT64", filters.min_engagement))
 
         sql = f"""
-        WITH scored AS (
+        WITH base AS (
           SELECT
             video_id,
             segment_id,
@@ -1022,17 +1022,64 @@ class BigQueryYouTubeRetriever:
             estimated_end_seconds,
             estimated_start_mmss,
             estimated_end_mmss,
+            LAG(segment_text) OVER (
+              PARTITION BY video_id
+              ORDER BY estimated_start_seconds, segment_id
+            ) AS previous_segment_text,
+            LEAD(segment_text) OVER (
+              PARTITION BY video_id
+              ORDER BY estimated_start_seconds, segment_id
+            ) AS next_segment_text,
+            embedding
+          FROM {QUOTED_SEGMENTS_TABLE_ID}
+          WHERE {" AND ".join(clauses)}
+            AND ARRAY_LENGTH(embedding) = ARRAY_LENGTH(@query_embedding)
+        ),
+        scored AS (
+          SELECT
+            video_id,
+            segment_id,
+            titulo_video,
+            url_video,
+            fecha_publicacion,
+            duracion_minutos,
+            tipo_duracion,
+            formato_video,
+            views,
+            likes,
+            comentarios,
+            engagement,
+            like_rate,
+            comment_rate,
+            views_por_dia,
+            views_por_minuto,
+            tema_legible,
+            descripcion_segmento,
+            segment_text,
+            previous_segment_text,
+            next_segment_text,
+            CONCAT(
+              IFNULL(previous_segment_text, ''), CHR(10),
+              IFNULL(segment_text, ''), CHR(10),
+              IFNULL(next_segment_text, '')
+            ) AS context_window_text,
+            estimated_start_seconds,
+            estimated_end_seconds,
+            estimated_start_mmss,
+            estimated_end_mmss,
             (
               SELECT COUNT(1)
               FROM UNNEST(@query_terms) AS term
               WHERE term != ''
                 AND STRPOS(
-                  LOWER(CONCAT(
-                    IFNULL(titulo_video, ''), ' ',
-                    IFNULL(tema_legible, ''), ' ',
-                    IFNULL(descripcion_segmento, ''), ' ',
-                    IFNULL(segment_text, '')
-                  )),
+                  LOWER(ARRAY_TO_STRING([
+                    COALESCE(titulo_video, ""),
+                    COALESCE(tema_legible, ""),
+                    COALESCE(descripcion_segmento, ""),
+                    COALESCE(previous_segment_text, ""),
+                    COALESCE(segment_text, ""),
+                    COALESCE(next_segment_text, "")
+                  ], " ")),
                   term
                 ) > 0
             ) AS lexical_hits,
@@ -1046,9 +1093,7 @@ class BigQueryYouTubeRetriever:
               SQRT((SELECT SUM(POW(q_value, 2)) FROM UNNEST(@query_embedding) AS q_value))
               * SQRT((SELECT SUM(POW(e_value, 2)) FROM UNNEST(embedding) AS e_value))
             ) AS score_semantico
-          FROM {QUOTED_SEGMENTS_TABLE_ID}
-          WHERE {" AND ".join(clauses)}
-            AND ARRAY_LENGTH(embedding) = ARRAY_LENGTH(@query_embedding)
+          FROM base
         )
         SELECT
           *,
@@ -1952,15 +1997,15 @@ def generate_final_answer(
     if response_mode == "moments":
         extra_rules = """
 - Responde breve, ordenado y con humor ligero.
-- Muestra maximo 3 resultados numerados.
+- Muestra maximo 5 resultados numerados.
 - Respeta EXACTAMENTE el orden de "resultados"; ya viene priorizado por relevancia, views y potencial de alcance.
-- Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views, likes y engagement si existen.
-- Usa el fragmento "segment_text" como evidencia principal del resultado.
+- Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views y likes.
+- Si el resultado trae "context_window_text", usalo para entender el significado, pero cita principalmente el fragmento central "segment_text".
 - Si una palabra coloquial puede tener doble sentido, aclara la lectura probable sin inventar.
 - Si la pregunta dice "en que tema se hablo de X", primero di la categoria probable usando "tema_legible" y "perfil_busqueda_contextual"; despues muestra los videos/minutos.
+- Menciona views y likes solo como apoyo, sin analisis largo.
 - Di explicitamente que el minuto es aproximado.
-- Cierra con una recomendacion breve sobre cual resultado conviene priorizar y por que, usando views/engagement.
-- Extension maxima: 180 palabras.
+- No agregues recomendaciones si el usuario solo pregunto donde se hablo del tema.
 """
     elif response_mode == "opinion":
         extra_rules = """
@@ -1989,10 +2034,9 @@ def generate_final_answer(
 - Responde como estratega de crecimiento de YouTube: claro, amigable y amante de subir el alcance.
 - Siempre explica el criterio de orden: la metrica pedida primero y views/engagement como desempate.
 - Respeta EXACTAMENTE el orden de "resultados"; no lo reordenes.
-- Presenta maximo 3 resultados numerados.
-- Para cada video o tema incluye la metrica principal, views, likes, engagement/comentarios si existen, URL si existe, y una lectura accionable.
+- Presenta rankings numerados y ordenados, no listas aleatorias.
+- Para cada video o tema incluye la metrica principal, views, engagement/comentarios si existen, y una lectura accionable.
 - Cierra con una recomendacion breve para crecer alcance.
-- Extension maxima: 220 palabras.
 """
     elif response_mode == "ml":
         extra_rules = """
@@ -2462,24 +2506,11 @@ def format_topic_analysis_answer(context: dict[str, Any]) -> str:
     if not rows:
         return "No encontre temas suficientes en BigQuery para responder con seguridad."
 
-    top = rows[0]
-    top_views = (context.get("temas_mas_views") or [None])[0]
-    lines = [
-        f"Mi lectura: si buscamos crecer con cabeza, yo miraria primero los temas por **{criterion}**, "
-        "pero sin perder de vista el volumen. El engagement te dice donde la audiencia se prende; "
-        "las views te dicen donde el algoritmo ya encontro camino.",
-        "",
-        f"El tema que pondria al frente es **{format_label(top.get('tema_legible'))}**: "
-        f"tiene {format_rate(top.get('engagement_promedio'))} de engagement con "
-        f"{format_count(top.get('videos'))} videos. Eso no se ve como golpe de suerte; "
-        "se ve como una linea editorial que ya sabe provocar reaccion.",
-        "",
-        f"Top temas por **{criterion}**:",
-    ]
+    lines = [f"Estos son los temas principales ordenados por **{criterion}**:"]
     for idx, row in enumerate(rows[:3], start=1):
         lines.extend([
             "",
-            f"**{idx}. {format_label(row.get('tema_legible'))}**",
+            f"**{idx}. {row.get('tema_legible', 'Sin tema')}**",
             f"- Videos: {format_count(row.get('videos'))}",
             f"- Views totales: {format_count(row.get('views_totales'))}",
             f"- Likes totales: {format_count(row.get('likes_totales'))}",
@@ -2487,20 +2518,8 @@ def format_topic_analysis_answer(context: dict[str, Any]) -> str:
             f"- Engagement promedio: {format_rate(row.get('engagement_promedio'))}",
         ])
 
-    if top_views and top_views.get("tema_legible") != top.get("tema_legible"):
-        lines.extend([
-            "",
-            f"Para alcance bruto, el tema mas fuerte es **{format_label(top_views.get('tema_legible'))}** "
-            f"con {format_count(top_views.get('views_totales'))} views totales. "
-            "Yo lo usaria como motor de descubrimiento y mezclaria sus ganchos con el tema de mayor engagement.",
-        ])
-
     lines.append("")
-    lines.append(
-        "Recomendacion practica: para el siguiente bloque de contenido, haria 2 piezas del tema #1 "
-        "y 1 pieza del tema con mas views. Asi no apuestas todo a alcance ni todo a comunidad: "
-        "combinas descubrimiento con conexion, que es donde el canal puede empujar mas fuerte."
-    )
+    lines.append("Comentario: prioriza el primer tema porque ya tiene senales medibles de interes en el canal.")
     return "\n".join(lines)
 
 
@@ -2821,9 +2840,9 @@ class RAGYouTubeAgent:
 
         if intent == "topic_moments":
             topic_profile = build_mexican_topic_profile(topic)
-            results = self._semantic_topic_moments(topic, filters=filters, limit=min(limit, 3))
+            results = self._semantic_topic_moments(topic, filters=filters, limit=min(limit, 5))
             if not results:
-                lexical = self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=min(limit, 3))
+                lexical = self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=min(limit, 5))
                 lexical = add_rank_and_reason(lexical, order_by="views")
                 context = {
                     "tipo": "respaldo_lexical",
@@ -3009,21 +3028,17 @@ class RAGYouTubeAgent:
         filters: Optional[SearchFilters] = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        try:
-            embedding_model = self.retriever.segments_embedding_model()
-            contextual_query = build_contextual_semantic_query(topic)
-            expanded_terms = expand_topic_terms(topic, max_terms=40)
-            query_embedding = embed_query_for_model(contextual_query, embedding_model)
-            results = self.retriever.semantic_search_transcript_segments(
-                query_embedding=query_embedding,
-                query_terms=expanded_terms,
-                filters=filters,
-                top_k=60,
-                min_score=max(0.12, MIN_SEMANTIC_SCORE - 0.03),
-            )
-        except Exception:
-            return []
-
+        embedding_model = self.retriever.segments_embedding_model()
+        contextual_query = build_contextual_semantic_query(topic)
+        expanded_terms = expand_topic_terms(topic, max_terms=40)
+        query_embedding = embed_query_for_model(contextual_query, embedding_model)
+        results = self.retriever.semantic_search_transcript_segments(
+            query_embedding=query_embedding,
+            query_terms=expanded_terms,
+            filters=filters,
+            top_k=60,
+            min_score=max(0.12, MIN_SEMANTIC_SCORE - 0.03),
+        )
         ranked = sorted(
             results,
             key=lambda row: (
