@@ -1332,6 +1332,9 @@ Reglas:
         plan["has_transcript"] = True
         plan["order_by"] = detect_order_by(question, default="views")
         plan["limit"] = detect_limit(question, default=5)
+        duration_type = detect_duration_type(question)
+        if duration_type:
+            plan["duration_type"] = duration_type
     q = normalize_text(question)
     if any(phrase in q for phrase in [
         "videos relacionados", "videos sobre", "contenido sobre",
@@ -1341,6 +1344,9 @@ Reglas:
         plan["topic"] = extract_topic_from_question(question, compact_history(history))
         plan["order_by"] = detect_order_by(question, default="views")
         plan["limit"] = detect_limit(question, default=5)
+        duration_type = detect_duration_type(question)
+        if duration_type:
+            plan["duration_type"] = duration_type
     if q in {"gracias", "muchas gracias", "listo", "ok gracias", "va gracias"}:
         plan["intent"] = "farewell"
     if any(phrase in q for phrase in [
@@ -1413,15 +1419,15 @@ def generate_final_answer(
     if response_mode == "moments":
         extra_rules = """
 - Responde breve, ordenado y con humor ligero.
-- Muestra maximo 5 resultados numerados.
+- Muestra maximo 3 resultados numerados.
 - Respeta EXACTAMENTE el orden de "resultados"; ya viene priorizado por relevancia, views y potencial de alcance.
-- Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views y likes.
+- Para cada resultado incluye: titulo, minuto aproximado, fragmento breve, URL, views, likes y engagement si existen.
 - Usa el fragmento "segment_text" como evidencia principal del resultado.
 - Si una palabra coloquial puede tener doble sentido, aclara la lectura probable sin inventar.
 - Si la pregunta dice "en que tema se hablo de X", primero di la categoria probable usando "tema_legible" y "perfil_busqueda_contextual"; despues muestra los videos/minutos.
-- Menciona views y likes solo como apoyo, sin analisis largo.
 - Di explicitamente que el minuto es aproximado.
-- No agregues recomendaciones si el usuario solo pregunto donde se hablo del tema.
+- Cierra con una recomendacion breve sobre cual resultado conviene priorizar y por que, usando views/engagement.
+- Extension maxima: 180 palabras.
 """
     elif response_mode == "opinion":
         extra_rules = """
@@ -1450,9 +1456,10 @@ def generate_final_answer(
 - Responde como estratega de crecimiento de YouTube: claro, amigable y amante de subir el alcance.
 - Siempre explica el criterio de orden: la metrica pedida primero y views/engagement como desempate.
 - Respeta EXACTAMENTE el orden de "resultados"; no lo reordenes.
-- Presenta rankings numerados y ordenados, no listas aleatorias.
-- Para cada video o tema incluye la metrica principal, views, engagement/comentarios si existen, y una lectura accionable.
+- Presenta maximo 3 resultados numerados.
+- Para cada video o tema incluye la metrica principal, views, likes, engagement/comentarios si existen, URL si existe, y una lectura accionable.
 - Cierra con una recomendacion breve para crecer alcance.
+- Extension maxima: 220 palabras.
 """
     elif response_mode == "ml":
         extra_rules = """
@@ -1511,14 +1518,22 @@ def fallback_answer_without_gemini(context: dict[str, Any], error: Exception) ->
         return f"No encontre resultados suficientes. Detalle tecnico: {str(error)[:180]}"
 
     lines = ["Gemini no estuvo disponible; te dejo los resultados directos:\n"]
-    for idx, row in enumerate(context["resultados"][:5], start=1):
+    for idx, row in enumerate(context["resultados"][:3], start=1):
         fragment = row.get("segment_text") or ""
-        if len(fragment) > 300:
-            fragment = fragment[:300] + "..."
+        if len(fragment) > 180:
+            fragment = fragment[:180] + "..."
+        metrics = []
+        if row.get("views") is not None:
+            metrics.append(f"views: {row.get('views')}")
+        if row.get("likes") is not None:
+            metrics.append(f"likes: {row.get('likes')}")
+        if row.get("engagement") is not None:
+            metrics.append(f"engagement: {row.get('engagement')}")
         lines.append(
             f"{idx}. {row.get('titulo_video', 'Sin titulo')}\n"
             f"   Minuto aprox.: {row.get('estimated_start_mmss', 'N/A')} - {row.get('estimated_end_mmss', '')}\n"
             f"   URL: {row.get('url_video', 'Sin URL')}\n"
+            f"   Metricas: {' | '.join(metrics) if metrics else 'N/A'}\n"
             f"   Fragmento: {fragment}\n"
         )
     return "\n".join(lines)
@@ -1719,9 +1734,9 @@ class RAGYouTubeAgent:
 
         if intent == "topic_moments":
             topic_profile = build_mexican_topic_profile(topic)
-            results = self._semantic_topic_moments(topic, filters=filters, limit=min(limit, 5))
+            results = self._semantic_topic_moments(topic, filters=filters, limit=min(limit, 3))
             if not results:
-                lexical = self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=min(limit, 5))
+                lexical = self.retriever.search_videos(topic, filters=filters, order_by=order_by, limit=min(limit, 3))
                 lexical = add_rank_and_reason(lexical, order_by="views")
                 context = {
                     "tipo": "respaldo_lexical",
@@ -1767,6 +1782,10 @@ class RAGYouTubeAgent:
                 "tipo": "videos_relacionados_hibridos",
                 "tema": topic,
                 "perfil_busqueda_contextual": topic_profile,
+                "filtros": {
+                    "tipo_duracion": filters.duration_type,
+                    "nota": "Si tipo_duracion es null, se consideran cortos y capitulos largos.",
+                },
                 "criterio_orden": (
                     f"Se combinaron coincidencias semanticas en transcripciones y busqueda textual expandida con lexico mexicano. "
                     f"Despues se priorizo por relacion con el tema, {order_by}, views y engagement."
