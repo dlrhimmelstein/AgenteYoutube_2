@@ -1296,7 +1296,7 @@ def model_chain(*model_names: Optional[str]) -> list[str]:
         seen.add(model_name)
         chain.append(model_name)
     return chain
------------------------------------ OPENROUTER -----------------------------------
+#----------------------------------- OPENROUTER -----------------------------------
 def is_quota_error(exc: Exception) -> bool:
     error_text = str(exc).lower()
     return any(token in error_text for token in [
