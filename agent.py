@@ -66,7 +66,7 @@ OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
 
 MIN_SEMANTIC_SCORE = float(_secret_or_env("MIN_SEMANTIC_SCORE", "0.18") or 0.18)
 MAX_CONTEXT_CHARS = int(_secret_or_env("MAX_CONTEXT_CHARS", "12000") or 12000)
-AGENT_BUILD_ID = "agent_Liz_fastpath_openrouter_2026-05-24_v8"
+AGENT_BUILD_ID = "agent_Liz_fastpath_openrouter_2026-05-24_v9"
 
 
 # =========================
@@ -531,6 +531,10 @@ def looks_like_format_question(question: str) -> bool:
     return any(phrase in q for phrase in [
         "que formato",
         "cual formato",
+        "formato de video",
+        "formato del video",
+        "que formato de video",
+        "cual formato de video",
         "formato funciona",
         "formato me recomiendas",
         "formato recomiendas",
