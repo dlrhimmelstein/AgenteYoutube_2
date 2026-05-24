@@ -408,6 +408,43 @@ def extract_topic_from_question(question: str, conversation_hint: str = "") -> s
     return " ".join(terms[:8]) if terms else question.strip()
 
 
+def extract_quoted_text(text: str) -> Optional[str]:
+    patterns = [
+        r'"([^"]+)"',
+        r"'([^']+)'",
+        r"“([^”]+)”",
+        r"‘([^’]+)’",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                return value
+    return None
+
+
+def extract_video_reference_from_question(question: str) -> str:
+    quoted = extract_quoted_text(question)
+    if quoted:
+        return quoted
+
+    q = normalize_text(question)
+    patterns = [
+        r"(?:video|short|capitulo|episodio)\s+(?:llamado|titulado|de|sobre)?\s+(.+)",
+        r"(?:como le fue|que tal le fue|como rindio|rendimiento de|estadisticas de|metricas de)\s+(?:al|el|del)?\s*(?:video|short|capitulo|episodio)?\s*(.+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q)
+        if match:
+            value = match.group(1).strip()
+            value = re.sub(r"\b(en views|en vistas|por views|por vistas|del canal)\b", " ", value)
+            return re.sub(r"\s+", " ", value).strip()
+
+    terms = extract_search_terms(question)
+    return " ".join(terms[:8]) if terms else question.strip()
+
+
 def looks_like_topic_moment_question(question: str) -> bool:
     q = normalize_text(question)
     return any(phrase in q for phrase in [
@@ -418,6 +455,20 @@ def looks_like_topic_moment_question(question: str) -> bool:
         "hablo de", "se hablo de", "se menciono", "mencionaron", "tocaron el tema",
         "tocaron tema", "momentos de", "clips de", "fragmentos de", "parte donde",
     ])
+
+
+def looks_like_video_performance_question(question: str) -> bool:
+    q = normalize_text(question)
+    performance_phrases = [
+        "como le fue", "que tal le fue", "que tan bien le fue",
+        "como rindio", "rendimiento de", "estadisticas de",
+        "metricas de", "views del video", "vistas del video",
+        "likes del video", "engagement del video", "analiza el video",
+    ]
+    video_words = ["video", "short", "capitulo", "episodio"]
+    return any(phrase in q for phrase in performance_phrases) and (
+        any(word in q for word in video_words) or extract_quoted_text(question) is not None
+    )
 
 
 def looks_like_upload_day_question(question: str) -> bool:
@@ -991,6 +1042,112 @@ class BigQueryYouTubeRetriever:
         """
         return self._query(sql, params)
 
+    def find_video_by_reference(self, video_reference: str, limit: int = 5) -> list[dict[str, Any]]:
+        terms = unique_preserve_order(
+            extract_search_terms(video_reference)
+            + extract_search_terms(video_reference.replace("-", " "))
+        )
+        reference_normalized = normalize_text(video_reference)
+        params: list[bigquery.QueryParameter] = [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
+            bigquery.ScalarQueryParameter("reference_like", "STRING", f"%{reference_normalized}%"),
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+        ]
+        clauses = ["channel_id = @channel_id"]
+        term_checks = []
+
+        for idx, term in enumerate(terms[:8]):
+            name = f"video_term_{idx}"
+            term_checks.append(f"LOWER(titulo_video) LIKE @{name}")
+            params.append(bigquery.ScalarQueryParameter(name, "STRING", f"%{term}%"))
+
+        if term_checks:
+            clauses.append("(LOWER(titulo_video) LIKE @reference_like OR " + " OR ".join(term_checks) + ")")
+        else:
+            clauses.append("LOWER(titulo_video) LIKE @reference_like")
+
+        term_hit_expr = "0"
+        if term_checks:
+            term_hit_expr = " + ".join(
+                f"IF(LOWER(titulo_video) LIKE @video_term_{idx}, 1, 0)"
+                for idx in range(min(len(terms), 8))
+            )
+
+        sql = f"""
+        SELECT
+          {self._video_columns(include_transcript=False)},
+          IF(LOWER(titulo_video) LIKE @reference_like, 1, 0) AS exact_title_match,
+          ({term_hit_expr}) AS title_term_hits
+        FROM {QUOTED_TABLE_ID}
+        WHERE {" AND ".join(clauses)}
+        ORDER BY exact_title_match DESC, title_term_hits DESC, views DESC
+        LIMIT @limit
+        """
+        return self._query(sql, params)
+
+    def video_performance_prediction(self, video_reference: str) -> list[dict[str, Any]]:
+        terms = unique_preserve_order(extract_search_terms(video_reference))
+        if not terms:
+            return []
+
+        params: list[bigquery.QueryParameter] = [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
+            bigquery.ScalarQueryParameter("limit", "INT64", 3),
+        ]
+        term_clauses = []
+        for idx, term in enumerate(terms[:8]):
+            name = f"pred_term_{idx}"
+            term_clauses.append(f"LOWER(titulo_video) LIKE @{name}")
+            params.append(bigquery.ScalarQueryParameter(name, "STRING", f"%{term}%"))
+
+        sql = f"""
+        SELECT
+          predicted_views,
+          titulo_video,
+          views AS views_reales,
+          views - predicted_views AS diferencia_predicha,
+          likes,
+          comentarios,
+          engagement,
+          like_rate,
+          tema_legible,
+          formato_video,
+          url_video
+        FROM ML.PREDICT(
+          MODEL {ML_MODEL_ID},
+          (
+            SELECT
+              titulo_video,
+              views,
+              duracion_minutos,
+              edad_video_dias,
+              anio_publicacion,
+              mes_publicacion,
+              dia_publicacion,
+              dia_semana_publicacion,
+              tipo_duracion,
+              formato_video,
+              tema_legible,
+              tiene_transcripcion_valida,
+              tiene_descripcion,
+              likes,
+              comentarios,
+              engagement,
+              like_rate,
+              url_video
+            FROM {QUOTED_TABLE_ID}
+            WHERE channel_id = @channel_id
+              AND ({" OR ".join(term_clauses)})
+          )
+        )
+        ORDER BY ABS(diferencia_predicha) DESC
+        LIMIT @limit
+        """
+        try:
+            return self._query(sql, params)
+        except Exception:
+            return []
+
     def ranked_videos(
         self,
         filters: Optional[SearchFilters] = None,
@@ -1212,7 +1369,7 @@ def normalize_intent_plan(plan: Any) -> dict[str, Any]:
 
     allowed_intents = {
         "farewell", "channel_summary", "channel_opinion", "improvements",
-        "famous_person_opinion", "topic_moments", "topic_analysis",
+        "famous_person_opinion", "video_performance", "topic_moments", "topic_analysis",
         "related_videos", "ranking", "ml_underperforming", "ml_overperforming",
         "ml_evaluation", "ml_explanation", "upload_day_recommendation", "out_of_scope", "fallback",
     }
@@ -1279,6 +1436,7 @@ Intenciones permitidas:
 - channel_opinion
 - improvements
 - famous_person_opinion
+- video_performance
 - topic_moments
 - topic_analysis
 - related_videos
@@ -1309,6 +1467,7 @@ Campos JSON:
 }}
 
 Reglas:
+- "como le fue al video X", "que tal le fue al video X", "estadisticas/metricas/rendimiento del video X" => video_performance.
 - "en que video/episodio/capitulo/minuto/momento hablaron de X" => topic_moments.
 - "en que tema se hablo de X" o "en que temas hablaron de X" => topic_moments; topic debe ser X, no la palabra "tema".
 - El canal usa espanol mexicano: interpreta jerga como wey, vato, morra, ligue, quedante, ghostear, toxico, red flag y eneje por su significado cultural.
@@ -1326,6 +1485,11 @@ Reglas:
 - Responde SOLO JSON.
 """
     plan = gemini_json(prompt)
+    if looks_like_video_performance_question(question):
+        plan["intent"] = "video_performance"
+        plan["video_reference"] = extract_video_reference_from_question(question)
+        plan["topic"] = plan["video_reference"]
+
     if looks_like_topic_moment_question(question):
         plan["intent"] = "topic_moments"
         plan["topic"] = plan.get("topic") or extract_topic_from_question(question, compact_history(history))
@@ -1467,6 +1631,16 @@ def generate_final_answer(
 - Si hay resultados de prediccion, ordenalos por diferencia predicha y explica que significa.
 - Tono claro, ligeramente comico y enfocado en mejorar alcance.
 - Respeta el orden de los resultados recuperados.
+"""
+    elif response_mode == "video_performance":
+        extra_rules = """
+- Responde si al video le fue bien, regular o bajo, usando SOLO las metricas del contexto.
+- Incluye titulo, URL, views, likes, comentarios, engagement, views por dia y views por minuto si existen.
+- Compara contra los promedios del canal cuando existan en "metricas_generales".
+- Si hay "prediccion_ml", explica en una frase si supero o quedo debajo de lo esperado.
+- Cierra con una recomendacion concreta para replicar o mejorar ese rendimiento.
+- Si hay varios posibles videos, usa el primer resultado como principal y menciona que fue el match mas probable.
+- Extension maxima: 190 palabras.
 """
     else:
         extra_rules = """
@@ -1707,6 +1881,35 @@ class RAGYouTubeAgent:
                 "temas_mejor_interaccion": self.retriever.topic_performance(limit=5, order_by="engagement"),
             }
             return generate_final_answer(question, context, history=history)
+
+        if intent == "video_performance":
+            video_reference = plan.get("video_reference") or extract_video_reference_from_question(question)
+            videos = self.retriever.find_video_by_reference(video_reference, limit=3)
+            prediction = self.retriever.video_performance_prediction(video_reference)
+            if not videos:
+                context = {
+                    "tipo": "video_no_encontrado",
+                    "video_referencia": video_reference,
+                    "nota": "No encontre un titulo suficientemente parecido en la tabla principal.",
+                    "resultados": self.retriever.search_videos(
+                        video_reference,
+                        filters=filters,
+                        order_by="views",
+                        limit=3,
+                    ),
+                }
+                return generate_final_answer(question, context, history=history, response_mode="normal")
+
+            context = {
+                "tipo": "rendimiento_video_especifico",
+                "video_referencia": video_reference,
+                "criterio_match": "Se busco coincidencia en titulo_video y se tomo el resultado con mayor coincidencia de titulo.",
+                "video_principal": videos[0],
+                "posibles_coincidencias": videos,
+                "metricas_generales": self.retriever.analytics_summary(),
+                "prediccion_ml": prediction[:1],
+            }
+            return generate_final_answer(question, context, history=history, response_mode="video_performance")
 
         if intent in {"channel_opinion", "famous_person_opinion"}:
             person = plan.get("person")
