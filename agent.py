@@ -55,6 +55,14 @@ GEMINI_FALLBACK_MODEL = _secret_or_env("GEMINI_FALLBACK_MODEL", "gemini-2.5-flas
 GEMINI_EMBEDDING_MODEL = _secret_or_env("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 LOCAL_EMBEDDING_MODEL = _secret_or_env("LOCAL_EMBEDDING_MODEL", "")
 
+# OpenRouter se usa como respaldo cuando Gemini falla por cuota 429.
+# Con una sola key puedes llamar varios modelos; no necesitas crear una key por modelo.
+OPENROUTER_API_KEY = _secret_or_env("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL = _secret_or_env("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite")
+OPENROUTER_STRONG_MODEL = _secret_or_env("OPENROUTER_STRONG_MODEL", "google/gemini-2.5-flash")
+OPENROUTER_SITE_URL = _secret_or_env("OPENROUTER_SITE_URL", "")
+OPENROUTER_APP_NAME = _secret_or_env("OPENROUTER_APP_NAME", "youtube-agent")
+
 MIN_SEMANTIC_SCORE = float(_secret_or_env("MIN_SEMANTIC_SCORE", "0.18") or 0.18)
 MAX_CONTEXT_CHARS = int(_secret_or_env("MAX_CONTEXT_CHARS", "12000") or 12000)
 AGENT_BUILD_ID = "agent_metric_fallback_2026-05-23_v2"
