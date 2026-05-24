@@ -81,74 +81,12 @@ def get_bigquery_client() -> bigquery.Client:
     return bigquery.Client(project=PROJECT_ID)
 
 
-def _get_all_api_keys() -> list[str]:
-    """Recopila todas las API keys disponibles en orden de prioridad."""
-    keys = []
-
-    for i in range(1, 6):
-        key = _secret_or_env(f"GOOGLE_API_KEY_{i}")
-        if key and key not in keys:
-            keys.append(key)
-
-    main_key = _secret_or_env("GOOGLE_API_KEY")
-    if main_key and main_key not in keys:
-        keys.append(main_key)
-
-    return keys
-
-
-# SIN @st.cache_resource — recibe api_key como parámetro
-def get_gemini_client(api_key: Optional[str] = None) -> genai.Client:
-    key = api_key
-    if not key:
-        # Si no viene key explícita, toma la primera disponible
-        available = _get_all_api_keys()
-        key = available[0] if available else None
-    if not key:
-        raise ValueError(
-            "No se encontro ninguna GOOGLE_API_KEY disponible. "
-            "Agrega GOOGLE_API_KEY o GOOGLE_API_KEY_1 ... GOOGLE_API_KEY_5 en Secrets."
-        )
-    return genai.Client(api_key=key)
-
-
 @st.cache_resource(show_spinner=False)
-def get_api_keys() -> list[str]:
-    """Cachea la lista de keys disponibles al arrancar la app."""
-    keys = _get_all_api_keys()
-    if not keys:
-        raise ValueError(
-            "No se encontro ninguna API key. "
-            "Agrega GOOGLE_API_KEY o GOOGLE_API_KEY_1 ... GOOGLE_API_KEY_5 en Secrets."
-        )
-    return keys
-
-
-def _get_exhausted_keys() -> set[str]:
-    if "exhausted_api_keys" not in st.session_state:
-        st.session_state["exhausted_api_keys"] = set()
-    return st.session_state["exhausted_api_keys"]
-
-
-def _mark_key_exhausted(api_key: str) -> None:
-    _get_exhausted_keys().add(api_key)
-
-
-def _reset_exhausted_keys() -> None:
-    st.session_state["exhausted_api_keys"] = set()
-
-
-def get_available_keys() -> list[str]:
-    """Devuelve keys que aún no están marcadas como agotadas."""
-    all_keys = get_api_keys()
-    exhausted = _get_exhausted_keys()
-    available = [k for k in all_keys if k not in exhausted]
-
-    if not available:
-        _reset_exhausted_keys()
-        available = all_keys
-
-    return available
+def get_gemini_client() -> genai.Client:
+    api_key = _secret_or_env("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("No se encontro GOOGLE_API_KEY en Secrets ni en variables de entorno.")
+    return genai.Client(api_key=api_key)
 
 
 @st.cache_resource(show_spinner=False)
