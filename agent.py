@@ -122,12 +122,33 @@ def compact_history(messages: Optional[list[dict[str, str]]], max_messages: int 
         return "Sin historial reciente."
 
     lines = []
+    # Guarda los últimos temas mencionados para contexto de seguimiento
+    last_topics = []
+    
     for message in messages[-max_messages:]:
         role = message.get("role", "user")
         content = re.sub(r"\s+", " ", str(message.get("content", ""))).strip()
-        if content:
-            lines.append(f"{role}: {content[:360]}")
-    return "\n".join(lines)[-1800:] or "Sin historial reciente."
+        if not content:
+            continue
+        
+        # Extrae temas del historial para enriquecer preguntas de seguimiento
+        if role == "user":
+            topic = extract_topic_from_question(content)
+            if topic and len(topic) > 3:
+                last_topics.append(topic)
+        
+        # Más caracteres para mensajes recientes, menos para antiguos
+        max_chars = 600 if message == messages[-1] else 300
+        lines.append(f"{role}: {content[:max_chars]}")
+    
+    history_text = "\n".join(lines)[-2400:]
+    
+    # Agrega contexto de temas recientes para resolver "eso", "ese tema", "de eso"
+    if last_topics:
+        topics_context = f"\n[Temas recientes en conversación: {', '.join(last_topics[-3:])}]"
+        history_text += topics_context
+    
+    return history_text or "Sin historial reciente."
 
 
 STOPWORDS = {
@@ -438,36 +459,23 @@ def looks_like_famous_opinion_question(question: str) -> bool:
 
 
 def detect_order_by(question: str, default: str = "views") -> str:
-    """
-    Traduce el lenguaje del usuario a una columna permitida para ordenar.
-    Esto evita mandar preguntas simples a Gemini.
-    """
     q = normalize_text(question)
-
     if "views por minuto" in q or "vistas por minuto" in q:
         return "views_por_minuto"
-    if "views por dia" in q or "vistas por dia" in q:
-        return "views_por_dia"
     if "engagement" in q or "interaccion" in q or "interacción" in q:
         return "engagement"
     if "likes" in q or "me gusta" in q:
         return "likes"
-    if "comentarios" in q or "comments" in q:
+    if "comentarios" in q:
         return "comentarios"
-    if "fecha" in q or "recientes" in q or "reciente" in q or "ultimos" in q or "ultimas" in q:
+    if "views por dia" in q or "vistas por dia" in q:
+        return "views_por_dia"
+    if "fecha" in q or "recientes" in q:
         return "fecha"
-    if (
-        "views" in q
-        or "vistas" in q
-        or "mas visto" in q
-        or "mas vistos" in q
-        or "mas vistas" in q
-        or "mayor numero de vistas" in q
-        or "mayor cantidad de vistas" in q
-    ):
+    if "views" in q or "vistas" in q:
         return "views"
-
     return default
+
 
 def detect_limit(question: str, default: int = 5) -> int:
     match = re.search(r"\btop\s+(\d{1,2})\b", normalize_text(question))
@@ -514,42 +522,25 @@ def detect_year(question: str) -> Optional[int]:
 
 
 def looks_like_metric_ranking_question(question: str) -> bool:
-    """
-    Detecta preguntas que se pueden resolver con una consulta directa a BigQuery,
-    sin gastar Gemini. La idea es atrapar rankings simples por metricas:
-    views/vistas, likes, comentarios, engagement, views por dia/minuto, etc.
-    """
     q = normalize_text(question)
-
-    # Casos muy comunes: "top 5 videos", "ranking de videos", etc.
     if ("top" in q or "ranking" in q) and ("video" in q or "videos" in q):
         return True
 
     subject_markers = [
         "que video", "cual video", "cuales videos", "que videos",
-        "cuales son los videos", "cuales son mis videos",
-        "cuales fueron los videos", "cuales son los video",
-        "videos con", "video con",
-        "videos que tienen", "videos que tuvieron",
-        "videos que generaron", "videos que recibieron",
-        "los videos con", "el video con",
+        "video con", "videos con",
     ]
-
     metric_markers = [
-        "mas vistas", "mas views", "mayor views", "mayores views",
-        "mayor numero de vistas", "mayor cantidad de vistas",
-        "mas visto", "mas vistos", "mejor rendimiento",
-        "mas likes", "mas me gusta", "mayor numero de likes",
-        "mas comentarios", "mayor numero de comentarios",
-        "mayor engagement", "mejor engagement", "mas engagement",
-        "mayor interaccion", "mejor interaccion", "mas interaccion",
-        "views por dia", "vistas por dia",
+        "mas vistas", "mas views", "mayor views", "mayor numero de vistas",
+        "mas visto", "mas vistos", "mas likes", "mas me gusta",
+        "mas comentarios", "mayor engagement", "mejor engagement",
+        "mas engagement", "views por dia", "vistas por dia",
         "views por minuto", "vistas por minuto",
     ]
-
     return any(marker in q for marker in subject_markers) and any(
         marker in q for marker in metric_markers
     )
+
 
 def detect_duration_type(question: str) -> Optional[str]:
     q = normalize_text(question)
@@ -1392,10 +1383,6 @@ def deterministic_plan_from_question(
     question: str,
     history: Optional[list[dict[str, str]]] = None,
 ) -> Optional[dict[str, Any]]:
-    """
-    Reglas rapidas que NO usan Gemini.
-    Todo lo que sea ranking/metrica simple debe resolverse desde BigQuery.
-    """
     q = normalize_text(question)
 
     if looks_like_metric_ranking_question(question):
@@ -1406,7 +1393,7 @@ def deterministic_plan_from_question(
         plan["year"] = detect_year(question)
         plan["limit"] = detect_limit(
             question,
-            default=5 if "videos" in q else 1,
+            default=3 if ("top" in q or "ranking" in q or "videos" in q) else 1,
         )
         duration_type = detect_duration_type(question)
         if duration_type:
@@ -1433,7 +1420,7 @@ def deterministic_plan_from_question(
         plan = default_intent_plan()
         plan["intent"] = "topic_analysis"
         plan["order_by"] = "views"
-        plan["limit"] = detect_limit(question, default=5)
+        plan["limit"] = detect_limit(question, default=3)
         return normalize_intent_plan(plan)
 
     if ("tema" in q or "temas" in q) and any(phrase in q for phrase in [
@@ -1442,6 +1429,105 @@ def deterministic_plan_from_question(
         plan = default_intent_plan()
         plan["intent"] = "topic_analysis"
         plan["order_by"] = "engagement"
+        plan["limit"] = detect_limit(question, default=3)
+        return normalize_intent_plan(plan)
+
+    # --- Siguiente video / recomendación de contenido ---
+    if any(phrase in q for phrase in [
+        "sobre que hago", "que video hago", "que deberia hacer",
+        "recomiendame un tema", "idea para mi siguiente video",
+        "siguiente video", "que contenido hacer", "sobre que grabar",
+        "que hago para mi proximo video", "proximo video",
+        "nueva idea", "ideas de videos", "que video hacer",
+        "que grabar", "sobre que hablar",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "next_video_recommendation"
+        return normalize_intent_plan(plan)
+
+    # --- Análisis de formato ---
+    if any(phrase in q for phrase in [
+        "que formato", "cual formato", "formato funciona",
+        "formato me va mejor", "shorts o largos", "cortos o largos",
+        "mejor formato", "que tipo de video", "cual tipo de video",
+        "videos cortos o largos", "shorts funcionan",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "format_analysis"
+        return normalize_intent_plan(plan)
+
+    # --- Análisis de duración ---
+    if any(phrase in q for phrase in [
+        "cuanto duran", "duracion ideal", "cuantos minutos",
+        "duracion de mis videos", "videos mas largos", "videos mas cortos",
+        "que duracion", "cual duracion",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "duration_analysis"
+        return normalize_intent_plan(plan)
+
+    # --- Frecuencia de publicación ---
+    if any(phrase in q for phrase in [
+        "cada cuanto subir", "con que frecuencia", "cuantos videos por",
+        "cuanto seguido", "cada cuantos dias subir", "frecuencia de subida",
+        "frecuencia de publicacion", "cuantos videos subo",
+        "con que regularidad", "cada cuando publicar",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "posting_frequency"
+        return normalize_intent_plan(plan)
+
+    # --- Análisis de títulos ---
+    if any(phrase in q for phrase in [
+        "que titulos", "cual titulo", "titulos funcionan",
+        "mejores titulos", "como titulare", "como pongo el titulo",
+        "titulos que jalan", "titulos con mas views",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "title_analysis"
+        return normalize_intent_plan(plan)
+
+    # --- Mejor periodo / mes histórico ---
+    if any(phrase in q for phrase in [
+        "mejor mes", "mejor periodo", "cuando me fue mejor",
+        "mes con mas views", "epoca con mas views", "pico de views",
+        "cuando tuve mas vistas", "cuando crecí mas", "cuando creci mas",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "best_period"
+        return normalize_intent_plan(plan)
+
+    # --- Velocidad de videos recientes ---
+    if any(phrase in q for phrase in [
+        "como van mis videos recientes", "videos nuevos como van",
+        "rendimiento reciente", "ultimos videos como van",
+        "mis videos de este mes", "videos recientes",
+        "como arrancaron mis ultimos videos",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "recent_video_velocity"
+        plan["limit"] = detect_limit(question, default=5)
+        return normalize_intent_plan(plan)
+
+    # --- Diagnóstico de crecimiento ---
+    if any(phrase in q for phrase in [
+        "por que no crezco", "por que no crece el canal",
+        "no estoy creciendo", "estancado", "canal estancado",
+        "por que bajo", "bajaron mis views", "bajaron mis vistas",
+        "perdí vistas", "perdi vistas", "caida de views",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "growth_diagnosis"
+        return normalize_intent_plan(plan)
+
+    # --- Videos con más comentarios (comunidad activa) ---
+    if any(phrase in q for phrase in [
+        "mas comentarios", "mayor comentarios", "videos con comentarios",
+        "que genera comentarios", "mas discusion", "mas interaccion en comentarios",
+    ]):
+        plan = default_intent_plan()
+        plan["intent"] = "ranking"
+        plan["order_by"] = "comentarios"
         plan["limit"] = detect_limit(question, default=5)
         return normalize_intent_plan(plan)
 
@@ -1650,6 +1736,16 @@ def generate_final_answer(
 - Tono claro, ligeramente comico y enfocado en mejorar alcance.
 - Respeta el orden de los resultados recuperados.
 """
+    elif response_mode == "next_video":
+        extra_rules = """
+- Tu objetivo: recomendar 2-3 ideas concretas de video basadas en lo que YA funcionó en el canal.
+- Analiza qué temas tienen alto engagement pero pocos videos (oportunidad sin explotar).
+- Analiza qué formato y duración tienen mejor views_por_minuto (señal de retención).
+- Para cada idea incluye: tema sugerido, por qué (métrica que lo justifica), formato recomendado, y gancho de título de ejemplo.
+- No inventes temas que no aparezcan en los datos del contexto.
+- Prioriza crecimiento de alcance: engagement > views_por_minuto > views totales.
+- Cierra con el día recomendado para publicar si hay datos de upload_day en contexto.
+"""
     else:
         extra_rules = """
 - Responde claro, breve, accionable y con humor ligero.
@@ -1790,27 +1886,87 @@ def format_ranking_answer(context: dict[str, Any]) -> str:
         "Se consideran cortos y capitulos largos salvo que pidas un tipo especifico."
     ]
 
-    for idx, row in enumerate(rows[:3], start=1):
+    # Muestra todos los resultados, no solo los primeros 3
+    for idx, row in enumerate(rows, start=1):
         main_value = format_metric_value(metric_key, row.get(metric_key))
+        tipo = str(row.get("tipo_duracion") or "").strip()
+        formato = str(row.get("formato_video") or "").strip()
+        duracion = row.get("duracion_minutos")
+
         lines.extend([
             "",
             f"**{idx}. {row.get('titulo_video', 'Sin titulo')}**",
             f"- Metrica principal ({metric_label}): {main_value}",
         ])
+
+        # Siempre muestra views si la métrica principal no es views
         if metric_key != "views":
             lines.append(f"- Views: {format_count(row.get('views'))}")
+
         lines.extend([
             f"- Likes: {format_count(row.get('likes'))}",
             f"- Comentarios: {format_count(row.get('comentarios'))}",
             f"- Engagement: {format_rate(row.get('engagement'))}",
-            f"- URL: {row.get('url_video', 'Sin URL')}",
         ])
 
+        # Datos de formato y duración solo si existen — útiles para replicar
+        if duracion is not None:
+            try:
+                lines.append(f"- Duracion: {float(duracion):.1f} min")
+            except Exception:
+                pass
+        if tipo:
+            lines.append(f"- Tipo: {tipo}")
+        if formato:
+            lines.append(f"- Formato: {formato}")
+
+        # Views por día y views por minuto como señal de retención y velocidad
+        views_por_dia = row.get("views_por_dia")
+        views_por_minuto = row.get("views_por_minuto")
+        if views_por_dia is not None:
+            lines.append(f"- Views/dia: {format_decimal(views_por_dia)}")
+        if views_por_minuto is not None:
+            lines.append(f"- Views/min: {format_decimal(views_por_minuto)}")
+
+        lines.append(f"- URL: {row.get('url_video', 'Sin URL')}")
+
+    # Cierre accionable: detecta el patrón común entre los top 3 para dar insight
     lines.append("")
-    lines.append(
-        "Comentario: este es el resultado mas fuerte para el criterio pedido; "
-        "usalo como referencia de tema, gancho y formato para la siguiente pieza."
-    )
+    if len(rows) >= 2:
+        # Detecta si los top videos comparten formato o tipo de duración
+        top_rows = rows[:3]
+        formatos_top = [str(r.get("formato_video") or "").strip() for r in top_rows if r.get("formato_video")]
+        tipos_top = [str(r.get("tipo_duracion") or "").strip() for r in top_rows if r.get("tipo_duracion")]
+
+        formato_comun = formatos_top[0] if formatos_top and all(f == formatos_top[0] for f in formatos_top) else None
+        tipo_comun = tipos_top[0] if tipos_top and all(t == tipos_top[0] for t in tipos_top) else None
+
+        if formato_comun and tipo_comun:
+            lines.append(
+                f"Patron detectado: los videos top comparten formato **{formato_comun}** y tipo **{tipo_comun}**. "
+                f"Replica esa combinacion en tu proxima pieza sobre un tema con engagement alto."
+            )
+        elif formato_comun:
+            lines.append(
+                f"Patron detectado: los videos top son todos de formato **{formato_comun}**. "
+                f"Considera replicar ese formato en tu siguiente video."
+            )
+        elif tipo_comun:
+            lines.append(
+                f"Patron detectado: los videos top son todos de tipo **{tipo_comun}**. "
+                f"Eso es una senal clara de que ese formato conecta con tu audiencia."
+            )
+        else:
+            lines.append(
+                f"Estos son los videos con mejor **{metric_label}** en el canal. "
+                "Analiza el tema y el gancho de los primeros dos para replicar lo que ya funciono."
+            )
+    else:
+        lines.append(
+            "Comentario: este es el resultado mas fuerte para el criterio pedido; "
+            "usalo como referencia de tema, gancho y formato para la siguiente pieza."
+        )
+
     return "\n".join(lines)
 
 
@@ -2233,6 +2389,96 @@ class RAGYouTubeAgent:
                 ],
             }
             return generate_final_answer(question, context, history=history, response_mode="ml")
+        if intent == "next_video_recommendation":
+            context = {
+                # Qué ya funcionó
+                "temas_mas_engagement": self.retriever.topic_performance(limit=8, order_by="engagement"),
+                "temas_mas_views": self.retriever.topic_performance(limit=8, order_by="views"),
+                # Qué formatos y duraciones rinden más
+                "videos_mejor_views_por_minuto": self.retriever.ranked_videos(order_by="views_por_minuto", limit=6),
+                "videos_mejor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=6),
+                # Qué temas tienen pocos videos pero buen rendimiento (oportunidades)
+                "temas_subexplotados": self.retriever.topic_performance(limit=20, order_by="engagement"),
+                "perfil_canal": self.retriever.channel_profile(),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="next_video")
+
+        if intent == "format_analysis":
+            context = {
+                "tipo": "analisis_formato",
+                "criterio": "Comparar rendimiento por formato y duracion para identificar cual conecta mejor con la audiencia.",
+                "rendimiento_por_formato": self.retriever.format_performance(limit=10),
+                "rendimiento_por_duracion": self.retriever.duration_performance(),
+                "videos_mejor_views_por_minuto": self.retriever.ranked_videos(order_by="views_por_minuto", limit=5),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+    
+        if intent == "duration_analysis":
+            context = {
+                "tipo": "analisis_duracion",
+                "criterio": "Identificar que duracion genera mejor retencion (views_por_minuto) y engagement.",
+                "rendimiento_por_duracion": self.retriever.duration_performance(),
+                "rendimiento_por_formato": self.retriever.format_performance(limit=10),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+    
+        if intent == "posting_frequency":
+            frecuencia = self.retriever.posting_frequency_analysis()
+            context = {
+                "tipo": "analisis_frecuencia_publicacion",
+                "criterio": (
+                    "Se analiza cuantos videos se publican por mes y como eso se correlaciona "
+                    "con el rendimiento promedio para encontrar la cadencia optima."
+                ),
+                "analisis_frecuencia": frecuencia,
+                "dia_recomendado": self.retriever.upload_day_performance()[:3],
+            }
+            return generate_final_answer(question, context, history=history, response_mode="upload_day")
+    
+        if intent == "title_analysis":
+            context = {
+                "tipo": "analisis_titulos",
+                "criterio": "Los titulos de videos con mayor engagement y views son la referencia para detectar patrones de gancho.",
+                "videos_mejor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=10),
+                "videos_mas_views": self.retriever.ranked_videos(order_by="views", limit=10),
+                "videos_mejor_views_por_minuto": self.retriever.ranked_videos(order_by="views_por_minuto", limit=10),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+    
+        if intent == "best_period":
+            context = {
+                "tipo": "mejor_periodo_historico",
+                "criterio": "Se agrupan videos por mes y anio para encontrar el periodo con mayor alcance e interaccion.",
+                "mejor_periodo": self.retriever.best_period(),
+                "metricas_generales": self.retriever.analytics_summary(),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+    
+        if intent == "recent_video_velocity":
+            context = {
+                "tipo": "velocidad_videos_recientes",
+                "criterio": "Videos publicados recientemente ordenados por views_por_dia para detectar cual arranco mejor.",
+                "videos_recientes": self.retriever.recent_video_velocity(days_old=30, limit=limit),
+                "referencia_canal": self.retriever.analytics_summary(),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
+    
+        if intent == "growth_diagnosis":
+            context = {
+                "tipo": "diagnostico_crecimiento",
+                "criterio": (
+                    "Se comparan metricas generales, temas con mejor y peor interaccion, "
+                    "y videos recientes para detectar donde esta el freno de crecimiento."
+                ),
+                "metricas_generales": self.retriever.analytics_summary(),
+                "temas_mejor_interaccion": self.retriever.topic_performance(limit=5, order_by="engagement"),
+                "temas_mas_hablados": self.retriever.topic_performance(limit=5, order_by="videos"),
+                "videos_mejor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=5),
+                "videos_peor_engagement": self.retriever.ranked_videos(order_by="engagement", limit=5),
+                "videos_recientes": self.retriever.recent_video_velocity(days_old=60, limit=5),
+                "perfil_canal": self.retriever.channel_profile(),
+            }
+            return generate_final_answer(question, context, history=history, response_mode="growth_rank")
 
         fallback_topic = topic or question
         semantic = self._semantic_topic_moments(fallback_topic, filters=filters, limit=8)
@@ -2442,6 +2688,86 @@ class RAGYouTubeAgent:
             ranked.append(item)
         return ranked
 
+    def format_performance(self, limit: int = 10) -> list[dict[str, Any]]:
+        sql = f"""
+        SELECT
+          formato_video,
+          COUNT(DISTINCT video_id) AS videos,
+          AVG(views) AS views_promedio,
+          AVG(engagement) AS engagement_promedio,
+          AVG(views_por_minuto) AS views_por_minuto_promedio,
+          AVG(views_por_dia) AS views_por_dia_promedio,
+          AVG(like_rate) AS like_rate_promedio,
+          SUM(views) AS views_totales
+        FROM {QUOTED_TABLE_ID}
+        WHERE channel_id = @channel_id
+          AND formato_video IS NOT NULL
+          AND TRIM(formato_video) != ''
+        GROUP BY formato_video
+        HAVING videos >= 2
+        ORDER BY engagement_promedio DESC
+        LIMIT @limit
+        """
+        return self._query(sql, [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID),
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
+        ])
+    
+    def duration_performance(self) -> list[dict[str, Any]]:
+        sql = f"""
+        SELECT
+          tipo_duracion,
+          CASE
+            WHEN duracion_minutos < 5  THEN 'menos de 5 min'
+            WHEN duracion_minutos < 15 THEN '5-15 min'
+            WHEN duracion_minutos < 30 THEN '15-30 min'
+            WHEN duracion_minutos < 60 THEN '30-60 min'
+            ELSE 'más de 60 min'
+          END AS rango_duracion,
+          COUNT(DISTINCT video_id) AS videos,
+          AVG(views) AS views_promedio,
+          AVG(engagement) AS engagement_promedio,
+          AVG(views_por_minuto) AS views_por_minuto_promedio,
+          AVG(like_rate) AS like_rate_promedio
+        FROM {QUOTED_TABLE_ID}
+        WHERE channel_id = @channel_id
+        GROUP BY tipo_duracion, rango_duracion
+        HAVING videos >= 2
+        ORDER BY views_por_minuto_promedio DESC
+        """
+        return self._query(sql, [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID)
+        ])
+    
+    def posting_frequency_analysis(self) -> dict[str, Any]:
+        """Analiza con qué frecuencia se publica y cómo afecta el rendimiento"""
+        sql = f"""
+        SELECT
+          anio_publicacion,
+          mes_publicacion,
+          COUNT(DISTINCT video_id) AS videos_en_mes,
+          AVG(views) AS views_promedio,
+          AVG(engagement) AS engagement_promedio,
+          SUM(views) AS views_totales_mes
+        FROM {QUOTED_TABLE_ID}
+        WHERE channel_id = @channel_id
+        GROUP BY anio_publicacion, mes_publicacion
+        ORDER BY anio_publicacion DESC, mes_publicacion DESC
+        LIMIT 12
+        """
+        rows = self._query(sql, [
+            bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID)
+        ])
+        if not rows:
+            return {}
+        
+        frecuencias = [r.get("videos_en_mes", 0) for r in rows]
+        return {
+            "por_mes": rows,
+            "promedio_videos_por_mes": sum(frecuencias) / len(frecuencias) if frecuencias else 0,
+            "max_videos_mes": max(frecuencias) if frecuencias else 0,
+            "min_videos_mes": min(frecuencias) if frecuencias else 0,
+        }
 
 # =========================
 # 8. INICIALIZACION
