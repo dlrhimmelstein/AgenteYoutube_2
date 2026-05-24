@@ -1001,6 +1001,40 @@ class BigQueryYouTubeRetriever:
         rows = self._query(sql, [bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID)])
         return rows[0] if rows else None
 
+    def performance_benchmarks(self) -> Optional[dict[str, Any]]:
+        sql = f"""
+        SELECT
+          COUNT(DISTINCT video_id) AS videos,
+          AVG(views) AS views_promedio,
+          APPROX_QUANTILES(views, 4)[OFFSET(1)] AS views_p25,
+          APPROX_QUANTILES(views, 4)[OFFSET(2)] AS views_mediana,
+          APPROX_QUANTILES(views, 4)[OFFSET(3)] AS views_p75,
+          AVG(likes) AS likes_promedio,
+          APPROX_QUANTILES(likes, 4)[OFFSET(1)] AS likes_p25,
+          APPROX_QUANTILES(likes, 4)[OFFSET(2)] AS likes_mediana,
+          APPROX_QUANTILES(likes, 4)[OFFSET(3)] AS likes_p75,
+          AVG(comentarios) AS comentarios_promedio,
+          APPROX_QUANTILES(comentarios, 4)[OFFSET(1)] AS comentarios_p25,
+          APPROX_QUANTILES(comentarios, 4)[OFFSET(2)] AS comentarios_mediana,
+          APPROX_QUANTILES(comentarios, 4)[OFFSET(3)] AS comentarios_p75,
+          AVG(engagement) AS engagement_promedio,
+          APPROX_QUANTILES(engagement, 4)[OFFSET(1)] AS engagement_p25,
+          APPROX_QUANTILES(engagement, 4)[OFFSET(2)] AS engagement_mediana,
+          APPROX_QUANTILES(engagement, 4)[OFFSET(3)] AS engagement_p75,
+          AVG(views_por_dia) AS views_por_dia_promedio,
+          APPROX_QUANTILES(views_por_dia, 4)[OFFSET(1)] AS views_por_dia_p25,
+          APPROX_QUANTILES(views_por_dia, 4)[OFFSET(2)] AS views_por_dia_mediana,
+          APPROX_QUANTILES(views_por_dia, 4)[OFFSET(3)] AS views_por_dia_p75,
+          AVG(views_por_minuto) AS views_por_minuto_promedio,
+          APPROX_QUANTILES(views_por_minuto, 4)[OFFSET(1)] AS views_por_minuto_p25,
+          APPROX_QUANTILES(views_por_minuto, 4)[OFFSET(2)] AS views_por_minuto_mediana,
+          APPROX_QUANTILES(views_por_minuto, 4)[OFFSET(3)] AS views_por_minuto_p75
+        FROM {QUOTED_TABLE_ID}
+        WHERE channel_id = @channel_id
+        """
+        rows = self._query(sql, [bigquery.ScalarQueryParameter("channel_id", "STRING", CHANNEL_ID)])
+        return rows[0] if rows else None
+
     def search_videos(
         self,
         topic: str,
@@ -1634,13 +1668,15 @@ def generate_final_answer(
 """
     elif response_mode == "video_performance":
         extra_rules = """
-- Responde si al video le fue bien, regular o bajo, usando SOLO las metricas del contexto.
+- Responde de forma realista: no digas "excelente", "fantastico" ni "oro puro" si el diagnostico no lo sostiene.
+- Primero da un veredicto: alto, mixto, regular o bajo, usando "diagnostico_rendimiento.evaluacion_general".
 - Incluye titulo, URL, views, likes, comentarios, engagement, views por dia y views por minuto si existen.
-- Compara contra los promedios del canal cuando existan en "metricas_generales".
+- Usa "diagnostico_rendimiento.metricas" para decir si views, likes, comentarios y engagement son altos o bajos frente al canal.
+- Si una metrica es alta y otra baja, dilo sin suavizarlo: rendimiento mixto.
 - Si hay "prediccion_ml", explica en una frase si supero o quedo debajo de lo esperado.
 - Cierra con una recomendacion concreta para replicar o mejorar ese rendimiento.
 - Si hay varios posibles videos, usa el primer resultado como principal y menciona que fue el match mas probable.
-- Extension maxima: 190 palabras.
+- Extension maxima: 210 palabras.
 """
     else:
         extra_rules = """
@@ -1850,6 +1886,66 @@ def group_best_segments_by_video(results: list[dict[str, Any]], max_per_video: i
     return final
 
 
+def classify_against_benchmark(value: Any, p25: Any, median: Any, p75: Any) -> dict[str, Any]:
+    value_f = safe_float(value)
+    p25_f = safe_float(p25)
+    median_f = safe_float(median)
+    p75_f = safe_float(p75)
+
+    if value is None:
+        return {"nivel": "sin dato", "lectura": "No hay dato suficiente para clasificar."}
+    if p75_f and value_f >= p75_f:
+        return {"nivel": "alto", "lectura": "Esta en el tramo alto del canal."}
+    if median_f and value_f >= median_f:
+        return {"nivel": "medio-alto", "lectura": "Esta por arriba de la mediana del canal."}
+    if p25_f and value_f >= p25_f:
+        return {"nivel": "medio-bajo", "lectura": "Esta por debajo de la mediana, pero no en el tramo mas bajo."}
+    return {"nivel": "bajo", "lectura": "Esta en el tramo bajo del canal."}
+
+
+def build_video_performance_diagnosis(video: dict[str, Any], benchmarks: Optional[dict[str, Any]]) -> dict[str, Any]:
+    benchmarks = benchmarks or {}
+    metrics = {
+        "views": ("views", "views_p25", "views_mediana", "views_p75"),
+        "likes": ("likes", "likes_p25", "likes_mediana", "likes_p75"),
+        "comentarios": ("comentarios", "comentarios_p25", "comentarios_mediana", "comentarios_p75"),
+        "engagement": ("engagement", "engagement_p25", "engagement_mediana", "engagement_p75"),
+        "views_por_dia": ("views_por_dia", "views_por_dia_p25", "views_por_dia_mediana", "views_por_dia_p75"),
+        "views_por_minuto": ("views_por_minuto", "views_por_minuto_p25", "views_por_minuto_mediana", "views_por_minuto_p75"),
+    }
+    diagnosis = {}
+    for label, keys in metrics.items():
+        value_key, p25_key, median_key, p75_key = keys
+        diagnosis[label] = {
+            "valor": video.get(value_key),
+            "p25": benchmarks.get(p25_key),
+            "mediana": benchmarks.get(median_key),
+            "p75": benchmarks.get(p75_key),
+            **classify_against_benchmark(
+                video.get(value_key),
+                benchmarks.get(p25_key),
+                benchmarks.get(median_key),
+                benchmarks.get(p75_key),
+            ),
+        }
+
+    levels = [item["nivel"] for item in diagnosis.values()]
+    high_count = sum(level in {"alto", "medio-alto"} for level in levels)
+    low_count = sum(level in {"bajo", "medio-bajo"} for level in levels)
+    if high_count >= 4:
+        overall = "alto"
+    elif low_count >= 4:
+        overall = "bajo"
+    else:
+        overall = "mixto"
+
+    return {
+        "evaluacion_general": overall,
+        "metricas": diagnosis,
+        "regla": "alto si la metrica supera p75; medio-alto si supera mediana; medio-bajo si supera p25; bajo si queda debajo de p25.",
+    }
+
+
 # =========================
 # 7. AGENTE RAG
 # =========================
@@ -1900,6 +1996,7 @@ class RAGYouTubeAgent:
                 }
                 return generate_final_answer(question, context, history=history, response_mode="normal")
 
+            benchmarks = self.retriever.performance_benchmarks()
             context = {
                 "tipo": "rendimiento_video_especifico",
                 "video_referencia": video_reference,
@@ -1907,6 +2004,8 @@ class RAGYouTubeAgent:
                 "video_principal": videos[0],
                 "posibles_coincidencias": videos,
                 "metricas_generales": self.retriever.analytics_summary(),
+                "benchmarks_canal": benchmarks,
+                "diagnostico_rendimiento": build_video_performance_diagnosis(videos[0], benchmarks),
                 "prediccion_ml": prediction[:1],
             }
             return generate_final_answer(question, context, history=history, response_mode="video_performance")
