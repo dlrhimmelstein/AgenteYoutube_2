@@ -9,7 +9,7 @@ import random
 import re
 import time
 import unicodedata
-mport requests
+import requests
 from dataclasses import dataclass
 from typing import Any, Optional
 
